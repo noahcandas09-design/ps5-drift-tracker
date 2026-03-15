@@ -164,31 +164,29 @@ def main():
 
     seen = load_seen()
 
-    while True:
-        all_items = fetch_vinted() + fetch_leboncoin()
-        fresh = [i for i in all_items if i["id"] not in seen]
-        relevant = [i for i in fresh if is_relevant(i)]
+    all_items = fetch_vinted() + fetch_leboncoin()
+    fresh = [i for i in all_items if i["id"] not in seen]
+    relevant = [i for i in fresh if is_relevant(i)]
 
-        if relevant:
-            log.info(f"✅ {len(relevant)} annonce(s) pertinente(s) trouvée(s)")
-            for item in relevant:
-                price_display = f"{item['price']} €" if item['price'] != "?" else "Prix non renseigné"
-                msg = (
-                    f"🎮 {item['source']} — <b>{item['title']}</b>\n"
-                    f"💶 {price_display}\n"
-                    f"🔗 <a href=\"{item['url']}\">Voir l'annonce</a>"
-                )
-                send_telegram(msg)
-                seen.add(item["id"])
-        else:
-            log.info(f"Rien de nouveau ({len(fresh)} annonce(s) filtrée(s))")
+    if relevant:
+        log.info(f"✅ {len(relevant)} annonce(s) pertinente(s) trouvée(s)")
+        for item in relevant:
+            price_display = f"{item['price']} €" if item['price'] != "?" else "Prix non renseigné"
+            msg = (
+                f"🎮 {item['source']} — <b>{item['title']}</b>\n"
+                f"💶 {price_display}\n"
+                f"🔗 <a href=\"{item['url']}\">Voir l'annonce</a>"
+            )
+            send_telegram(msg)
+            seen.add(item["id"])
+    else:
+        log.info(f"Rien de nouveau ({len(fresh)} annonce(s) filtrée(s))")
 
-        # On marque quand même les non-pertinentes pour ne pas les retraiter
-        for i in fresh:
-            seen.add(i["id"])
+    # On marque quand même les non-pertinentes pour ne pas les retraiter
+    for i in fresh:
+        seen.add(i["id"])
 
-        save_seen(seen)
-        time.sleep(CHECK_INTERVAL)
+    save_seen(seen)
 
 if __name__ == "__main__":
     main()

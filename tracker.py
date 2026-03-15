@@ -24,11 +24,14 @@ SEEN_FILE          = Path("seen_ids.json")
 
 PRIX_MAX = 20  # €
 
-# Mots-clés qui doivent apparaître dans le titre (au moins un)
-KEYWORDS_REQUIRED = ["drift", "joystick", "stick", "analogique", "broken", "cassée", "abîmée", "pièce", "réparation", "hs", "défaut"]
+# Le titre doit contenir "manette" ET "ps5"
+KEYWORDS_REQUIRED_ALL = ["manette", "ps5"]
+
+# ET au moins un de ces mots liés au drift/panne
+KEYWORDS_REQUIRED_ONE = ["drift", "joystick", "stick", "analogique", "cassée", "abîmée", "pièce", "réparation", "hs", "défaut", "broken", "panne"]
 
 # Mots-clés qui excluent l'annonce
-KEYWORDS_EXCLUDE = ["xbox", "ps4", "nintendo", "switch", "manette filaire", "accessoire"]
+KEYWORDS_EXCLUDE = ["xbox", "ps4", "nintendo", "switch", "support", "chargeur", "housse", "pochette", "accessoire", "câble", "cable", "skin", "grip"]
 
 # URLs de recherche — les paramètres de prix/tri sont gérés dans le code
 VINTED_SEARCH_URL = "https://www.vinted.fr/catalog?search_text=manette+ps5&price_to=20&order=newest_first"
@@ -64,8 +67,12 @@ def is_relevant(item: dict) -> bool:
     except ValueError:
         pass  # prix inconnu → on laisse passer
 
-    # Doit contenir au moins un mot-clé requis
-    if not any(kw in title for kw in KEYWORDS_REQUIRED):
+    # Doit contenir TOUS les mots obligatoires
+    if not all(kw in title for kw in KEYWORDS_REQUIRED_ALL):
+        return False
+
+    # Doit contenir au moins un mot lié au drift/panne
+    if not any(kw in title for kw in KEYWORDS_REQUIRED_ONE):
         return False
 
     # Ne doit pas contenir de mots exclus

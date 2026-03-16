@@ -23,8 +23,8 @@ ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
 SEEN_FILE          = Path("seen_ids.json")
 STATS_FILE         = Path("stats.json")
 
-PRIX_MAX           = 20
-PRIX_TOTAL_MAX     = 25
+PRIX_MAX           = 30
+PRIX_TOTAL_MAX     = 30  # pas de livraison en plus
 NOTE_MIN           = 4.0
 COUT_REPARATION    = 8
 PRIX_REVENTE       = 45
@@ -187,8 +187,7 @@ def is_relevant(item: dict) -> tuple:
 
     try:
         price = float(item["price"])
-        shipping = float(item.get("shipping") or 0)
-        if price > PRIX_MAX or (price + shipping) > PRIX_TOTAL_MAX:
+        if price > PRIX_MAX:
             return False, False, ""
     except ValueError:
         pass
@@ -206,7 +205,7 @@ def is_relevant(item: dict) -> tuple:
     vraie_panne, raison = detect_vraie_panne(full_text)
 
     try:
-        if float(item["price"]) <= 15:
+        if float(item["price"]) <= 20:
             return True, vraie_panne, raison
     except ValueError:
         pass
@@ -315,7 +314,7 @@ def fetch_vinted() -> list:
         log.warning(f"Vinted session : {e}")
         return []
     params = {"search_text": "manette ps5", "order": "newest_first",
-              "per_page": "30", "price_to": str(PRIX_MAX)}
+              "per_page": "30", "price_to": "30"}
     try:
         r = session.get(f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
                         headers=headers, timeout=15)
@@ -346,7 +345,7 @@ def fetch_vinted() -> list:
 # ── Scraping Leboncoin (RSS) ──────────────────────────────────────────────────
 def fetch_leboncoin() -> list:
     import xml.etree.ElementTree as ET
-    rss_url = "https://www.leboncoin.fr/rss?text=manette+ps5+drift&price_max=20&regions=12&shippable=1"
+    rss_url = "https://www.leboncoin.fr/rss?text=manette+ps5+drift&price_max=30&regions=12&shippable=1"
     try:
         r = requests.get(rss_url, headers={"User-Agent": "RSSReader/1.0"}, timeout=15)
         r.raise_for_status()

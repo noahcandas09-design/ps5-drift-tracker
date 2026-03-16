@@ -215,11 +215,14 @@ def is_relevant(item: dict) -> tuple:
     return True, vraie_panne, raison
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
-def send_discord(message: str, photo_url: str = None, retries=3):
+def send_discord(message: str, url: str = None, photo_url: str = None, retries=3):
     if not DISCORD_WEBHOOK_URL:
         return
     # Nettoie les balises HTML pour Discord
     clean = re.sub(r"<[^>]+>", "", message)
+    # Ajoute le lien direct à la fin
+    if url:
+        clean += f"\n🔗 {url}"
     payload = {"content": clean}
     if photo_url:
         payload["embeds"] = [{"image": {"url": photo_url}}]
@@ -309,10 +312,10 @@ def send_item(item: dict, vraie_panne: bool, raison: str, ai: dict):
 
     if item.get("photo"):
         send_telegram_photo(item["photo"], caption)
-        send_discord(caption, item["photo"])
+        send_discord(caption, item["url"], item["photo"])
     else:
         send_telegram_text(caption)
-        send_discord(caption)
+        send_discord(caption, item["url"])
 
 # ── Scraping Vinted ───────────────────────────────────────────────────────────
 def fetch_vinted() -> list:

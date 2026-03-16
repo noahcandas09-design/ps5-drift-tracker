@@ -1,11 +1,6 @@
 """
-Tracker Vinted + Leboncoin → Telegram — Version Finale
-- Analyse IA (Claude Haiku) de chaque annonce
-- Détection vraie panne via regex
-- Estimation rentabilité
-- Alerte urgence si ≤ 5€
-- Historique + stats
-- Score sur 100, déduplication, photos, retry
+Tracker Vinted + Leboncoin → Telegram + Discord
+Manettes PS5 officielles ≤ 30€
 """
 
 import os, json, logging, requests, hashlib, re
@@ -21,31 +16,29 @@ TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-SEEN_FILE          = Path("seen_ids.json")
-STATS_FILE         = Path("stats.json")
+SEEN_FILE  = Path("seen_ids.json")
+STATS_FILE = Path("stats.json")
 
-PRIX_MAX           = 30
-PRIX_TOTAL_MAX     = 30  # pas de livraison en plus
-NOTE_MIN           = 4.0
-COUT_REPARATION    = 8
-PRIX_REVENTE       = 45
+PRIX_MAX        = 30
+COUT_REPARATION = 8
+PRIX_REVENTE    = 45
 
 KEYWORDS_REQUIRED_ALL = ["manette", "ps5"]
-KEYWORDS_EXCLUDE = ["xbox", "ps4", "nintendo", "switch", "support", "chargeur",
-                     "housse", "pochette", "câble", "cable", "skin", "grip", "dock",
-                     "générique", "generique", "compatible", "sans fil generique",
-                     "non officielle", "third party", "manette pc", "manette generique"]
-KEYWORDS_BOOST        = {
+KEYWORDS_EXCLUDE      = [
+    "xbox", "ps4", "nintendo", "switch", "support", "chargeur",
+    "housse", "pochette", "câble", "cable", "skin", "grip", "dock",
+    "générique", "generique", "compatible", "non officielle", "third party"
+]
+KEYWORDS_BOOST = {
     "drift": 30, "joystick": 25, "stick": 20, "panne": 20,
     "cassée": 15, "réparation": 15, "pièce": 15, "hs": 10,
 }
-
 PATTERNS_VRAIE_PANNE = [
-    r"drift", r"joystick\s*(hs|cassé|mort|broken|défectueux)",
+    r"drift", r"joystick\s*(hs|cassé|mort|broken)",
     r"stick\s*(gauche|droit|l3|r3)", r"analogique\s*(défectueux|hs|cassé)",
-    r"(gauche|droit)\s*drift", r"bouton\s*(hs|cassé|bloqué|collé)",
-    r"ne\s*(fonctionne|marche)\s*(plus|pas)", r"pour\s*(pièce|réparation)",
-    r"à\s*réparer", r"en\s*panne", r"défectueuse?", r"broken"
+    r"bouton\s*(hs|cassé|bloqué)", r"ne\s*(fonctionne|marche)\s*(plus|pas)",
+    r"pour\s*(pièce|réparation)", r"à\s*réparer", r"en\s*panne",
+    r"défectueuse?", r"broken"
 ]
 PATTERNS_FAUX_POSITIF = [
     r"anti.?drift", r"protection.*stick", r"capuchon",
@@ -59,7 +52,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Persistance ───────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def load_seen() -> set:
     if SEEN_FILE.exists():
         return set(json.loads(SEEN_FILE.read_text()))
@@ -91,16 +84,22 @@ def title_hash(title: str) -> str:
     normalized = "".join(c for c in title.lower() if c.isalnum())
     return hashlib.md5(normalized.encode()).hexdigest()[:12]
 
-# ── Détection panne (regex) ───────────────────────────────────────────────────
+def parse_price(raw) -> str:
+    """Gère les cas où Vinted renvoie un dict ou une string pour le prix."""
+    if isinstance(raw, dict):
+        return str(raw.get("amount", "?"))
+    return str(raw) if raw is not None else "?"
+
+# ── Détection panne ───────────────────────────────────────────────────────────
 def detect_vraie_panne(text: str) -> tuple:
-    text_lower = text.lower()
+    t = text.lower()
     for pat in PATTERNS_FAUX_POSITIF:
-        if re.search(pat, text_lower):
+        if re.search(pat, t):
             return False, "accessoire détecté"
     for pat in PATTERNS_VRAIE_PANNE:
-        match = re.search(pat, text_lower)
-        if match:
-            return True, match.group(0)
+        m = re.search(pat, t)
+        if m:
+            return True, m.group(0)
     return False, ""
 
 # ── Analyse Claude AI ─────────────────────────────────────────────────────────
@@ -108,36 +107,24 @@ def analyse_claude(item: dict) -> dict:
     if not ANTHROPIC_API_KEY:
         return {"confiance": 50, "resume": "", "conseil": "vérifier", "type_panne": "inconnue"}
     try:
-        prompt = f"""Analyse cette annonce de manette PS5 et réponds UNIQUEMENT en JSON valide.
+        prompt = f"""Analyse cette annonce et réponds UNIQUEMENT en JSON valide, sans markdown.
 
 Titre: {item['title']}
-Description: {item.get('description', 'Aucune description')}
+Description: {item.get('description', 'Aucune')}
 Prix: {item['price']} €
 
-Réponds avec ce format JSON exact:
-{{
-  "est_manette_ps5_defectueuse": true,
-  "confiance": 85,
-  "type_panne": "drift joystick gauche",
-  "resume": "Manette PS5 avec drift du stick gauche vendue pour pièces",
-  "conseil": "acheter",
-  "raison": "Prix très bas, panne clairement identifiée"
-}}
+Format attendu:
+{{"est_manette_ps5_officielle": true, "confiance": 85, "type_panne": "drift stick gauche", "resume": "Manette PS5 DualSense avec drift", "conseil": "acheter", "raison": "Prix bas, panne identifiée"}}
 
-conseil doit être: acheter, vérifier, ou ignorer"""
+conseil = acheter / vérifier / ignorer"""
 
-        headers = {
-            "x-api-key": ANTHROPIC_API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        }
-        body = {
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 300,
-            "messages": [{"role": "user", "content": prompt}]
-        }
-        r = requests.post("https://api.anthropic.com/v1/messages",
-                          headers=headers, json=body, timeout=15)
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 300,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=15
+        )
         r.raise_for_status()
         text = r.json()["content"][0]["text"].strip()
         text = re.sub(r"```json|```", "", text).strip()
@@ -145,17 +132,6 @@ conseil doit être: acheter, vérifier, ou ignorer"""
     except Exception as e:
         log.error(f"Claude API : {e}")
         return {"confiance": 50, "resume": "", "conseil": "vérifier", "type_panne": "inconnue"}
-
-# ── Rentabilité ───────────────────────────────────────────────────────────────
-def calcul_rentabilite(price: float) -> dict:
-    cout_total = price + COUT_REPARATION
-    profit = PRIX_REVENTE - cout_total
-    return {
-        "cout_total": round(cout_total, 2),
-        "profit_estime": round(profit, 2),
-        "rentable": profit > 0,
-        "roi": round((profit / cout_total) * 100) if cout_total > 0 else 0
-    }
 
 # ── Score ─────────────────────────────────────────────────────────────────────
 def compute_score(item: dict, vraie_panne: bool, ai: dict) -> int:
@@ -165,7 +141,7 @@ def compute_score(item: dict, vraie_panne: bool, ai: dict) -> int:
         price = float(item["price"])
         if price <= 5:    score += 60
         elif price <= 10: score += 45
-        elif price <= 15: score += 25
+        elif price <= 20: score += 25
         else:             score += 10
     except ValueError:
         pass
@@ -175,12 +151,6 @@ def compute_score(item: dict, vraie_panne: bool, ai: dict) -> int:
     if vraie_panne:
         score += 15
     score += int(ai.get("confiance", 50) * 0.1)
-    try:
-        note = float(item.get("note") or 0)
-        if note >= 4.8: score += 15
-        elif note >= 4.5: score += 8
-    except (ValueError, TypeError):
-        pass
     return min(score, 100)
 
 # ── Filtrage ──────────────────────────────────────────────────────────────────
@@ -189,8 +159,7 @@ def is_relevant(item: dict) -> tuple:
     full_text = title + " " + item.get("description", "").lower()
 
     try:
-        price = float(item["price"])
-        if price > PRIX_MAX:
+        if float(item["price"]) > PRIX_MAX:
             return False, False, ""
     except ValueError:
         pass
@@ -201,64 +170,54 @@ def is_relevant(item: dict) -> tuple:
         return False, False, ""
 
     vraie_panne, raison = detect_vraie_panne(full_text)
-
-    # ≤ 30€ → toutes les manettes PS5 sans condition de panne
-    try:
-        if float(item["price"]) <= 30:
-            return True, vraie_panne, raison
-    except ValueError:
-        pass
-
     return True, vraie_panne, raison
 
+# ── Rentabilité ───────────────────────────────────────────────────────────────
+def calcul_rentabilite(price: float) -> dict:
+    cout = price + COUT_REPARATION
+    profit = PRIX_REVENTE - cout
+    return {"cout": round(cout, 2), "profit": round(profit, 2),
+            "rentable": profit > 0, "roi": round((profit / cout) * 100) if cout > 0 else 0}
+
 # ── Telegram ──────────────────────────────────────────────────────────────────
-def send_discord(message: str, url: str = None, photo_url: str = None, retries=3):
+def send_telegram_text(msg: str, retries=3):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    for i in range(retries):
+        try:
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg,
+                                     "parse_mode": "HTML", "disable_web_page_preview": False}, timeout=10).raise_for_status()
+            return
+        except Exception as e:
+            log.error(f"Telegram text ({i+1}) : {e}")
+
+def send_telegram_photo(photo_url: str, caption: str, retries=3):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    for i in range(retries):
+        try:
+            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "photo": photo_url,
+                                     "caption": caption, "parse_mode": "HTML"}, timeout=10).raise_for_status()
+            return
+        except Exception as e:
+            log.error(f"Telegram photo ({i+1}) : {e}")
+
+# ── Discord ───────────────────────────────────────────────────────────────────
+def send_discord(msg: str, url: str = None, photo_url: str = None, retries=3):
     if not DISCORD_WEBHOOK_URL:
         return
-    # Nettoie les balises HTML pour Discord
-    clean = re.sub(r"<[^>]+>", "", message)
-    # Ajoute le lien direct à la fin
+    clean = re.sub(r"<[^>]+>", "", msg)
     if url:
         clean += f"\n🔗 {url}"
     payload = {"content": clean}
     if photo_url:
         payload["embeds"] = [{"image": {"url": photo_url}}]
-    for attempt in range(retries):
+    for i in range(retries):
         try:
-            r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
-            r.raise_for_status()
+            requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10).raise_for_status()
             return
         except Exception as e:
-            log.error(f"Discord (tentative {attempt+1}) : {e}")
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    for attempt in range(retries):
-        try:
-            r = requests.post(url, json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": False,
-            }, timeout=10)
-            r.raise_for_status()
-            return
-        except Exception as e:
-            log.error(f"Telegram text (tentative {attempt+1}) : {e}")
+            log.error(f"Discord ({i+1}) : {e}")
 
-def send_telegram_photo(photo_url: str, caption: str, retries=3):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    for attempt in range(retries):
-        try:
-            r = requests.post(url, json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "photo": photo_url,
-                "caption": caption,
-                "parse_mode": "HTML",
-            }, timeout=10)
-            r.raise_for_status()
-            return
-        except Exception as e:
-            log.error(f"Telegram photo (tentative {attempt+1}) : {e}")
-
+# ── Envoi annonce ─────────────────────────────────────────────────────────────
 def send_item(item: dict, vraie_panne: bool, raison: str, ai: dict):
     try:
         price = float(item["price"])
@@ -276,36 +235,30 @@ def send_item(item: dict, vraie_panne: bool, raison: str, ai: dict):
         except ValueError:
             pass
 
-    note_str  = f"\n⭐ Vendeur : {item['note']}/5" if item.get("note") else ""
     panne_str = f"\n🔧 Panne : <i>{raison}</i>" if vraie_panne and raison else ""
 
     conseil_emoji = {"acheter": "🟢", "ignorer": "🔴", "vérifier": "🟡"}.get(ai.get("conseil", ""), "🤖")
     ai_str = ""
     if ai.get("resume"):
-        ai_str = (
-            f"\n🤖 <b>IA :</b> {ai.get('resume', '')}"
-            f"\n{conseil_emoji} Conseil : <b>{ai.get('conseil', '?')}</b> — {ai.get('raison', '')}"
-            f"\n🎯 Confiance IA : {ai.get('confiance', '?')}%"
-        )
+        ai_str = (f"\n🤖 <b>IA :</b> {ai.get('resume', '')}"
+                  f"\n{conseil_emoji} <b>{ai.get('conseil', '?')}</b> — {ai.get('raison', '')}"
+                  f"\n🎯 Confiance : {ai.get('confiance', '?')}%")
 
     renta_str = ""
     if renta:
         emoji = "💰" if renta["rentable"] else "⚠️"
-        renta_str = f"\n{emoji} Achat+répa={renta['cout_total']}€ → profit <b>{renta['profit_estime']}€</b> (ROI {renta['roi']}%)"
+        renta_str = f"\n{emoji} Achat+répa={renta['cout']}€ → profit <b>{renta['profit']}€</b> (ROI {renta['roi']}%)"
 
     score = item.get("score", 0)
-    if urgent:       header = "🚨🚨 URGENCE — PRIX INCROYABLE 🚨🚨"
+    if urgent:        header = "🚨🚨 URGENCE — PRIX INCROYABLE 🚨🚨"
     elif score >= 70: header = "🔥 SUPER AFFAIRE"
     elif score >= 40: header = "✅ Bonne affaire"
     else:             header = "📌 Annonce"
 
-    caption = (
-        f"{header}\n"
-        f"{item['source']} — <b>{item['title']}</b>\n"
-        f"💶 {item['price']} €{total_str}{note_str}{panne_str}{ai_str}{renta_str}\n"
-        f"📊 Score : {score}/100\n"
-        f"🔗 <a href=\"{item['url']}\">Voir l'annonce</a>"
-    )
+    caption = (f"{header}\n{item['source']} — <b>{item['title']}</b>\n"
+               f"💶 {item['price']} €{total_str}{panne_str}{ai_str}{renta_str}\n"
+               f"📊 Score : {score}/100\n"
+               f"🔗 <a href=\"{item['url']}\">Voir l'annonce</a>")
 
     if item.get("photo"):
         send_telegram_photo(item["photo"], caption)
@@ -330,7 +283,7 @@ def fetch_vinted() -> list:
         log.warning(f"Vinted session : {e}")
         return []
     params = {"search_text": "manette ps5", "order": "newest_first",
-              "per_page": "30", "price_to": "30"}
+              "per_page": "30", "price_to": str(PRIX_MAX)}
     try:
         r = session.get(f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
                         headers=headers, timeout=15)
@@ -345,9 +298,8 @@ def fetch_vinted() -> list:
                 "id":          f"vinted_{i['id']}",
                 "title":       i.get("title", "Sans titre"),
                 "description": i.get("description", ""),
-                "price":       price_str,
-                "shipping":    str(i.get("service_fee", "") or ""),
-                "note":        i.get("user", {}).get("feedback_reputation"),
+                "price":       parse_price(i.get("price")),
+                "shipping":    parse_price(i.get("service_fee")) if i.get("service_fee") else None,
                 "url":         f"https://www.vinted.fr/items/{i['id']}",
                 "photo":       photo,
                 "source":      "Vinted 🟢",
@@ -385,7 +337,6 @@ def fetch_leboncoin() -> list:
                 "description": desc,
                 "price":       price,
                 "shipping":    None,
-                "note":        None,
                 "url":         link,
                 "photo":       photo,
                 "source":      "Leboncoin 🔴",
@@ -435,21 +386,18 @@ def main():
         for item in deduped:
             ai = item["ai"]
             if ai.get("conseil") == "ignorer" and ai.get("confiance", 0) >= 80:
-                log.info(f"IA a ignoré : {item['title']}")
+                log.info(f"IA ignoré : {item['title']}")
                 continue
             send_item(item, item["vraie_panne"], item["raison_panne"], ai)
             update_stats(item, stats)
             seen.add(item["id"])
 
-        if len(deduped) > 1 and stats["best_item"]:
+        if len(deduped) > 1 and stats.get("best_item"):
             avg = round(sum(stats["prices"][-20:]) / min(len(stats["prices"]), 20), 2)
-            send_telegram_text(
-                f"📊 <b>Stats du tracker</b>\n"
-                f"Total trouvées : {stats['total_found']}\n"
-                f"Meilleur prix : {stats['best_price']} €\n"
-                f"Prix moyen : {avg} €\n"
-                f"🏆 <a href=\"{stats['best_item']['url']}\">{stats['best_item']['title']}</a>"
-            )
+            summary = (f"📊 <b>Stats</b>\nTotal : {stats['total_found']} | "
+                       f"Meilleur prix : {stats['best_price']}€ | Moyenne : {avg}€")
+            send_telegram_text(summary)
+            send_discord(summary)
     else:
         log.info(f"Rien de pertinent ({len(fresh)} annonce(s) examinée(s))")
 

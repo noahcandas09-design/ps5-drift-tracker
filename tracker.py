@@ -204,14 +204,13 @@ def is_relevant(item: dict) -> tuple:
 
     vraie_panne, raison = detect_vraie_panne(full_text)
 
+    # ≤ 30€ → toutes les manettes PS5 sans condition de panne
     try:
-        if float(item["price"]) <= 20:
+        if float(item["price"]) <= 30:
             return True, vraie_panne, raison
     except ValueError:
         pass
 
-    if not vraie_panne:
-        return False, False, ""
     return True, vraie_panne, raison
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -345,7 +344,7 @@ def fetch_vinted() -> list:
 # ── Scraping Leboncoin (RSS) ──────────────────────────────────────────────────
 def fetch_leboncoin() -> list:
     import xml.etree.ElementTree as ET
-    rss_url = "https://www.leboncoin.fr/rss?text=manette+ps5+drift&price_max=30&regions=12&shippable=1"
+    rss_url = "https://www.leboncoin.fr/rss?text=manette+ps5&price_max=30&regions=12&shippable=1"
     try:
         r = requests.get(rss_url, headers={"User-Agent": "RSSReader/1.0"}, timeout=15)
         r.raise_for_status()

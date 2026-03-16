@@ -15,6 +15,8 @@ TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+GIST_TOKEN          = os.getenv("GIST_TOKEN")
+GIST_ID             = os.getenv("GIST_ID")
 
 SEEN_FILE  = Path("seen_ids.json")
 STATS_FILE = Path("stats.json")
@@ -54,11 +56,34 @@ log = logging.getLogger(__name__)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def load_seen() -> set:
+    if GIST_TOKEN and GIST_ID:
+        try:
+            r = requests.get(
+                f"https://api.github.com/gists/{GIST_ID}",
+                headers={"Authorization": f"token {GIST_TOKEN}"},
+                timeout=10
+            )
+            r.raise_for_status()
+            content = r.json()["files"]["seen_ids.json"]["content"]
+            return set(json.loads(content))
+        except Exception as e:
+            log.error(f"Gist load : {e}")
     if SEEN_FILE.exists():
         return set(json.loads(SEEN_FILE.read_text()))
     return set()
 
 def save_seen(seen: set):
+    if GIST_TOKEN and GIST_ID:
+        try:
+            requests.patch(
+                f"https://api.github.com/gists/{GIST_ID}",
+                headers={"Authorization": f"token {GIST_TOKEN}"},
+                json={"files": {"seen_ids.json": {"content": json.dumps(list(seen))}}},
+                timeout=10
+            ).raise_for_status()
+            return
+        except Exception as e:
+            log.error(f"Gist save : {e}")
     SEEN_FILE.write_text(json.dumps(list(seen)))
 
 def load_stats() -> dict:

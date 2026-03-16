@@ -16,9 +16,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
-ANTHROPIC_API_KEY  = os.getenv("ANTHROPIC_API_KEY")
+TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID")
+ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 SEEN_FILE          = Path("seen_ids.json")
 STATS_FILE         = Path("stats.json")
@@ -214,7 +215,21 @@ def is_relevant(item: dict) -> tuple:
     return True, vraie_panne, raison
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
-def send_telegram_text(message: str, retries=3):
+def send_discord(message: str, photo_url: str = None, retries=3):
+    if not DISCORD_WEBHOOK_URL:
+        return
+    # Nettoie les balises HTML pour Discord
+    clean = re.sub(r"<[^>]+>", "", message)
+    payload = {"content": clean}
+    if photo_url:
+        payload["embeds"] = [{"image": {"url": photo_url}}]
+    for attempt in range(retries):
+        try:
+            r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+            r.raise_for_status()
+            return
+        except Exception as e:
+            log.error(f"Discord (tentative {attempt+1}) : {e}")
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     for attempt in range(retries):
         try:
@@ -294,8 +309,10 @@ def send_item(item: dict, vraie_panne: bool, raison: str, ai: dict):
 
     if item.get("photo"):
         send_telegram_photo(item["photo"], caption)
+        send_discord(caption, item["photo"])
     else:
         send_telegram_text(caption)
+        send_discord(caption)
 
 # ── Scraping Vinted ───────────────────────────────────────────────────────────
 def fetch_vinted() -> list:

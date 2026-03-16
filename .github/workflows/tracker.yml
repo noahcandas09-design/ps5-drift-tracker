@@ -19,10 +19,11 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests python-dotenv
+        run: pip install requests python-dotenv anthropic
 
       - name: Run tracker (one shot)
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python tracker.py

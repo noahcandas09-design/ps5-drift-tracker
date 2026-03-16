@@ -31,8 +31,10 @@ COUT_REPARATION    = 8
 PRIX_REVENTE       = 45
 
 KEYWORDS_REQUIRED_ALL = ["manette", "ps5"]
-KEYWORDS_EXCLUDE      = ["xbox", "ps4", "nintendo", "switch", "support", "chargeur",
-                          "housse", "pochette", "câble", "cable", "skin", "grip", "dock"]
+KEYWORDS_EXCLUDE = ["xbox", "ps4", "nintendo", "switch", "support", "chargeur",
+                     "housse", "pochette", "câble", "cable", "skin", "grip", "dock",
+                     "générique", "generique", "compatible", "sans fil generique",
+                     "non officielle", "third party", "manette pc", "manette generique"]
 KEYWORDS_BOOST        = {
     "drift": 30, "joystick": 25, "stick": 20, "panne": 20,
     "cassée": 15, "réparation": 15, "pièce": 15, "hs": 10,
@@ -197,11 +199,6 @@ def is_relevant(item: dict) -> tuple:
         return False, False, ""
     if any(kw in title for kw in KEYWORDS_EXCLUDE):
         return False, False, ""
-    try:
-        if float(item.get("note") or 5) < NOTE_MIN:
-            return False, False, ""
-    except (ValueError, TypeError):
-        pass
 
     vraie_panne, raison = detect_vraie_panne(full_text)
 
@@ -348,7 +345,7 @@ def fetch_vinted() -> list:
                 "id":          f"vinted_{i['id']}",
                 "title":       i.get("title", "Sans titre"),
                 "description": i.get("description", ""),
-                "price":       str(i.get("price", "?")),
+                "price":       price_str,
                 "shipping":    str(i.get("service_fee", "") or ""),
                 "note":        i.get("user", {}).get("feedback_reputation"),
                 "url":         f"https://www.vinted.fr/items/{i['id']}",

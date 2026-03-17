@@ -308,7 +308,7 @@ def fetch_vinted() -> list:
         log.warning(f"Vinted session : {e}")
         return []
     params = {"search_text": "manette ps5", "order": "newest_first",
-              "per_page": "30", "price_to": str(PRIX_MAX)}
+              "per_page": "100", "price_to": str(PRIX_MAX)}
     try:
         r = session.get(f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
                         headers=headers, timeout=15)

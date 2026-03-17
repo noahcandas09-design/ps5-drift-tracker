@@ -189,7 +189,8 @@ def is_relevant(item: dict) -> tuple:
     except ValueError:
         pass
 
-    if not all(kw in title for kw in KEYWORDS_REQUIRED_ALL):
+    # Doit matcher au moins un groupe de mots-clés requis
+    if not any(all(kw in title for kw in group) for group in KEYWORDS_REQUIRED_ANY):
         return False, False, ""
     if any(kw in title for kw in KEYWORDS_EXCLUDE):
         return False, False, ""

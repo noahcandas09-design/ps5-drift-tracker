@@ -18,23 +18,40 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 GIST_TOKEN          = os.getenv("GIST_TOKEN")
 GIST_ID             = os.getenv("GIST_ID")
 
-SEEN_FILE  = Path("seen_ids.json")
-STATS_FILE = Path("stats.json")
-
+SEEN_FILE       = Path("seen_ids.json")
+STATS_FILE      = Path("stats.json")
 PRIX_MAX        = 30
 COUT_REPARATION = 8
 PRIX_REVENTE    = 45
 
-KEYWORDS_REQUIRED_ALL = ["manette", "ps5"]
-KEYWORDS_EXCLUDE      = [
-    "xbox", "ps4", "nintendo", "switch", "support", "chargeur",
-    "housse", "pochette", "câble", "cable", "skin", "grip", "dock",
-    "générique", "generique", "compatible", "non officielle", "third party"
+# Groupes de mots-clés — au moins un groupe doit matcher entièrement
+KEYWORDS_REQUIRED = [
+    ["dualsense"],
+    ["manette", "ps5"],
+    ["controller", "ps5"],
 ]
+
+KEYWORDS_EXCLUDE = [
+    "xbox", "ps4", "nintendo", "switch",
+    "support", "chargeur", "housse", "pochette",
+    "câble", "cable", "skin", "grip", "dock",
+    "générique", "generique", "compatible",
+    "non officielle", "third party",
+    "coque", "sacoche", "étui", "protection",
+    "stand", "holder", "wall mount",
+    "adaptateur", "converter", "dongle",
+    "ventilateur", "cooling", "fan",
+    "autocollant", "sticker", "wrap",
+    "lot accessoires", "pack accessoires",
+    "joystick caps", "thumbstick", "thumbgrip",
+    "trigger", "poignée",
+]
+
 KEYWORDS_BOOST = {
     "drift": 30, "joystick": 25, "stick": 20, "panne": 20,
     "cassée": 15, "réparation": 15, "pièce": 15, "hs": 10,
 }
+
 PATTERNS_VRAIE_PANNE = [
     r"drift", r"joystick\s*(hs|cassé|mort|broken)",
     r"stick\s*(gauche|droit|l3|r3)", r"analogique\s*(défectueux|hs|cassé)",
@@ -54,7 +71,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Persistance Gist ──────────────────────────────────────────────────────────
 def load_seen() -> set:
     if GIST_TOKEN and GIST_ID:
         try:
@@ -110,7 +127,6 @@ def title_hash(title: str) -> str:
     return hashlib.md5(normalized.encode()).hexdigest()[:12]
 
 def parse_price(raw) -> str:
-    """Gère les cas où Vinted renvoie un dict ou une string pour le prix."""
     if isinstance(raw, dict):
         return str(raw.get("amount", "?"))
     return str(raw) if raw is not None else "?"
@@ -141,7 +157,8 @@ Prix: {item['price']} €
 Format attendu:
 {{"est_manette_ps5_officielle": true, "confiance": 85, "type_panne": "drift stick gauche", "resume": "Manette PS5 DualSense avec drift", "conseil": "acheter", "raison": "Prix bas, panne identifiée"}}
 
-conseil = acheter / vérifier / ignorer"""
+conseil = acheter / vérifier / ignorer
+Si ce n'est pas une vraie manette PS5 officielle (DualSense), mettre conseil = ignorer avec confiance élevée."""
 
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -189,9 +206,11 @@ def is_relevant(item: dict) -> tuple:
     except ValueError:
         pass
 
-    # Doit matcher au moins un groupe de mots-clés requis
-    if not any(all(kw in title for kw in group) for group in KEYWORDS_REQUIRED_ANY):
+    # Au moins un groupe de mots-clés doit matcher
+    if not any(all(kw in title for kw in group) for group in KEYWORDS_REQUIRED):
         return False, False, ""
+
+    # Aucun mot exclu
     if any(kw in title for kw in KEYWORDS_EXCLUDE):
         return False, False, ""
 
@@ -375,7 +394,7 @@ def fetch_leboncoin() -> list:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    log.info("🚀 Tracker démarré — Version Finale")
+    log.info("🚀 Tracker démarré — Version Finale Stable")
     seen        = load_seen()
     stats       = load_stats()
     seen_hashes = set()
@@ -413,17 +432,11 @@ def main():
             ai = item["ai"]
             if ai.get("conseil") == "ignorer" and ai.get("confiance", 0) >= 80:
                 log.info(f"IA ignoré : {item['title']}")
+                seen.add(item["id"])
                 continue
             send_item(item, item["vraie_panne"], item["raison_panne"], ai)
             update_stats(item, stats)
             seen.add(item["id"])
-
-        if len(deduped) > 1 and stats.get("best_item"):
-            avg = round(sum(stats["prices"][-20:]) / min(len(stats["prices"]), 20), 2)
-            summary = (f"📊 <b>Stats</b>\nTotal : {stats['total_found']} | "
-                       f"Meilleur prix : {stats['best_price']}€ | Moyenne : {avg}€")
-            send_telegram_text(summary)
-            send_discord(summary)
     else:
         log.info(f"Rien de pertinent ({len(fresh)} annonce(s) examinée(s))")
 

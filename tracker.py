@@ -1,6 +1,6 @@
 """
 Tracker Vinted + Leboncoin → Telegram + Discord
-Manettes PS5 officielles ≤ 30€
+iPhones 11 à 17 Pro Max cassés/bloqués iCloud ≤ 150€
 """
 
 import os, json, logging, requests, hashlib, re
@@ -18,50 +18,31 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 GIST_TOKEN          = os.getenv("GIST_TOKEN")
 GIST_ID             = os.getenv("GIST_ID")
 
-SEEN_FILE       = Path("seen_ids.json")
-STATS_FILE      = Path("stats.json")
-PRIX_MAX        = 30
-COUT_REPARATION = 8
-PRIX_REVENTE    = 45
+SEEN_FILE  = Path("seen_ids.json")
+STATS_FILE = Path("stats.json")
+PRIX_MAX   = 150
 
-# Groupes de mots-clés — au moins un groupe doit matcher entièrement
-KEYWORDS_REQUIRED = [
-    ["dualsense"],
-    ["manette", "ps5"],
-    ["controller", "ps5"],
+# Modèles recherchés
+IPHONE_MODELS = [
+    "iphone 11", "iphone 12", "iphone 13", "iphone 14", "iphone 15",
+    "iphone 16", "iphone 17",
 ]
 
-KEYWORDS_EXCLUDE = [
-    "xbox", "ps4", "nintendo", "switch",
-    "support", "chargeur", "housse", "pochette",
-    "câble", "cable", "skin", "grip", "dock",
-    "générique", "generique", "compatible",
-    "non officielle", "third party",
-    "coque", "sacoche", "étui", "protection",
-    "stand", "holder", "wall mount",
-    "adaptateur", "converter", "dongle",
-    "ventilateur", "cooling", "fan",
-    "autocollant", "sticker", "wrap",
-    "lot accessoires", "pack accessoires",
-    "joystick caps", "thumbstick", "thumbgrip",
-    "trigger", "poignée",
-]
-
-KEYWORDS_BOOST = {
-    "drift": 30, "joystick": 25, "stick": 20, "panne": 20,
-    "cassée": 15, "réparation": 15, "pièce": 15, "hs": 10,
+# Conditions préférées (booste le score)
+CONDITIONS_BOOST = {
+    "icloud": 40, "bloqué": 30, "locked": 30, "activation lock": 35,
+    "écran cassé": 25, "vitre cassée": 25, "écran fissuré": 25,
+    "batterie": 15, "hs": 20, "panne": 20, "cassé": 20,
+    "broken": 20, "pour pièce": 25, "à réparer": 25,
+    "ne s'allume": 30, "ne s'allume plus": 30,
 }
 
-PATTERNS_VRAIE_PANNE = [
-    r"drift", r"joystick\s*(hs|cassé|mort|broken)",
-    r"stick\s*(gauche|droit|l3|r3)", r"analogique\s*(défectueux|hs|cassé)",
-    r"bouton\s*(hs|cassé|bloqué)", r"ne\s*(fonctionne|marche)\s*(plus|pas)",
-    r"pour\s*(pièce|réparation)", r"à\s*réparer", r"en\s*panne",
-    r"défectueuse?", r"broken"
-]
-PATTERNS_FAUX_POSITIF = [
-    r"anti.?drift", r"protection.*stick", r"capuchon",
-    r"thumb.?grip", r"support.*manette", r"chargeur", r"dock", r"housse"
+KEYWORDS_EXCLUDE = [
+    "coque", "housse", "étui", "protection", "verre trempé",
+    "chargeur", "câble", "cable", "adaptateur", "airpods",
+    "ipad", "macbook", "watch", "samsung", "xiaomi", "huawei",
+    "accessoire", "sticker", "skin", "support", "dock",
+    "lot accessoires", "occasion très bon état complet",
 ]
 
 logging.basicConfig(
@@ -103,25 +84,6 @@ def save_seen(seen: set):
             log.error(f"Gist save : {e}")
     SEEN_FILE.write_text(json.dumps(list(seen)))
 
-def load_stats() -> dict:
-    if STATS_FILE.exists():
-        return json.loads(STATS_FILE.read_text())
-    return {"total_found": 0, "best_price": None, "prices": [], "best_item": None}
-
-def save_stats(stats: dict):
-    STATS_FILE.write_text(json.dumps(stats, ensure_ascii=False, indent=2))
-
-def update_stats(item: dict, stats: dict):
-    stats["total_found"] += 1
-    try:
-        price = float(item["price"])
-        stats["prices"].append(price)
-        if stats["best_price"] is None or price < stats["best_price"]:
-            stats["best_price"] = price
-            stats["best_item"] = {"title": item["title"], "price": price, "url": item["url"]}
-    except ValueError:
-        pass
-
 def title_hash(title: str) -> str:
     normalized = "".join(c for c in title.lower() if c.isalnum())
     return hashlib.md5(normalized.encode()).hexdigest()[:12]
@@ -131,39 +93,91 @@ def parse_price(raw) -> str:
         return str(raw.get("amount", "?"))
     return str(raw) if raw is not None else "?"
 
-# ── Détection panne ───────────────────────────────────────────────────────────
-def detect_vraie_panne(text: str) -> tuple:
-    t = text.lower()
-    for pat in PATTERNS_FAUX_POSITIF:
-        if re.search(pat, t):
-            return False, "accessoire détecté"
-    for pat in PATTERNS_VRAIE_PANNE:
-        m = re.search(pat, t)
-        if m:
-            return True, m.group(0)
-    return False, ""
+# ── Filtrage ──────────────────────────────────────────────────────────────────
+def is_relevant(item: dict) -> bool:
+    title = item["title"].lower()
+
+    try:
+        if float(item["price"]) > PRIX_MAX:
+            return False
+    except ValueError:
+        pass
+
+    # Doit contenir "iphone" + un modèle valide
+    if "iphone" not in title:
+        return False
+    if not any(model in title for model in IPHONE_MODELS):
+        return False
+
+    # Exclusions
+    if any(kw in title for kw in KEYWORDS_EXCLUDE):
+        return False
+
+    return True
+
+# ── Score ─────────────────────────────────────────────────────────────────────
+def compute_score(item: dict, ai: dict) -> int:
+    score = 0
+    title = item["title"].lower()
+    desc  = item.get("description", "").lower()
+    full  = title + " " + desc
+
+    try:
+        price = float(item["price"])
+        if price <= 20:   score += 70
+        elif price <= 50:  score += 50
+        elif price <= 80:  score += 30
+        elif price <= 100: score += 20
+        else:              score += 10
+    except ValueError:
+        pass
+
+    for kw, pts in CONDITIONS_BOOST.items():
+        if kw in full:
+            score += pts
+
+    score += int(ai.get("confiance", 50) * 0.1)
+    return min(score, 100)
 
 # ── Analyse Claude AI ─────────────────────────────────────────────────────────
 def analyse_claude(item: dict) -> dict:
     if not ANTHROPIC_API_KEY:
-        return {"confiance": 50, "resume": "", "conseil": "vérifier", "type_panne": "inconnue"}
+        return {"confiance": 50, "resume": "", "conseil": "vérifier", "modele": "inconnu", "etat": "inconnu"}
     try:
-        prompt = f"""Analyse cette annonce et réponds UNIQUEMENT en JSON valide, sans markdown.
+        prompt = f"""Analyse cette annonce d'iPhone et réponds UNIQUEMENT en JSON valide, sans markdown.
 
 Titre: {item['title']}
 Description: {item.get('description', 'Aucune')}
 Prix: {item['price']} €
 
-Format attendu:
-{{"est_manette_ps5_officielle": true, "confiance": 85, "type_panne": "drift stick gauche", "resume": "Manette PS5 DualSense avec drift", "conseil": "acheter", "raison": "Prix bas, panne identifiée"}}
+Questions clés :
+- Est-ce un vrai iPhone Apple (pas Samsung, pas accessoire) ?
+- Quel modèle exact ? (ex: iPhone 13 Pro Max)
+- Est-il bloqué iCloud ?
+- Quel est l'état ? (écran cassé, batterie faible, bloqué, etc.)
+- Compare le prix demandé avec la valeur marché réelle de ce modèle dans cet état en France en 2025
+- Est-ce une urgence absolue (prix très en dessous du marché) ?
 
-conseil = acheter / vérifier / ignorer
-Si ce n'est pas une vraie manette PS5 officielle (DualSense), mettre conseil = ignorer avec confiance élevée."""
+Si ce n'est PAS un iPhone Apple réel → conseil = ignorer, confiance = 95
+
+Valeurs marché approximatives en France (état cassé/bloqué) :
+- iPhone 11 cassé : 30-60€ | bloqué iCloud : 20-40€
+- iPhone 12 cassé : 50-90€ | bloqué iCloud : 30-60€
+- iPhone 13 cassé : 80-130€ | bloqué iCloud : 50-90€
+- iPhone 14 cassé : 120-180€ | bloqué iCloud : 80-130€
+- iPhone 15 cassé : 150-220€ | bloqué iCloud : 100-160€
+- iPhone 16 cassé : 200-280€ | bloqué iCloud : 140-200€
+
+Format JSON attendu:
+{{"est_iphone_apple": true, "modele": "iPhone 13 Pro", "bloque_icloud": true, "etat": "écran cassé + iCloud", "valeur_marche": 90, "pourcentage_sous_marche": 45, "urgence": true, "confiance": 90, "resume": "iPhone 13 Pro bloqué iCloud avec écran cassé", "conseil": "acheter", "raison": "45% sous le prix du marché, très rentable"}}
+
+urgence = true uniquement si le prix est 30%+ en dessous de la valeur marché
+conseil = acheter / vérifier / ignorer"""
 
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 300,
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 400,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=15
         )
@@ -173,56 +187,7 @@ Si ce n'est pas une vraie manette PS5 officielle (DualSense), mettre conseil = i
         return json.loads(text)
     except Exception as e:
         log.error(f"Claude API : {e}")
-        return {"confiance": 50, "resume": "", "conseil": "vérifier", "type_panne": "inconnue"}
-
-# ── Score ─────────────────────────────────────────────────────────────────────
-def compute_score(item: dict, vraie_panne: bool, ai: dict) -> int:
-    score = 0
-    title = item["title"].lower()
-    try:
-        price = float(item["price"])
-        if price <= 5:    score += 60
-        elif price <= 10: score += 45
-        elif price <= 20: score += 25
-        else:             score += 10
-    except ValueError:
-        pass
-    for kw, pts in KEYWORDS_BOOST.items():
-        if kw in title:
-            score += pts
-    if vraie_panne:
-        score += 15
-    score += int(ai.get("confiance", 50) * 0.1)
-    return min(score, 100)
-
-# ── Filtrage ──────────────────────────────────────────────────────────────────
-def is_relevant(item: dict) -> tuple:
-    title = item["title"].lower()
-    full_text = title + " " + item.get("description", "").lower()
-
-    try:
-        if float(item["price"]) > PRIX_MAX:
-            return False, False, ""
-    except ValueError:
-        pass
-
-    # Au moins un groupe de mots-clés doit matcher
-    if not any(all(kw in title for kw in group) for group in KEYWORDS_REQUIRED):
-        return False, False, ""
-
-    # Aucun mot exclu
-    if any(kw in title for kw in KEYWORDS_EXCLUDE):
-        return False, False, ""
-
-    vraie_panne, raison = detect_vraie_panne(full_text)
-    return True, vraie_panne, raison
-
-# ── Rentabilité ───────────────────────────────────────────────────────────────
-def calcul_rentabilite(price: float) -> dict:
-    cout = price + COUT_REPARATION
-    profit = PRIX_REVENTE - cout
-    return {"cout": round(cout, 2), "profit": round(profit, 2),
-            "rentable": profit > 0, "roi": round((profit / cout) * 100) if cout > 0 else 0}
+        return {"confiance": 50, "resume": "", "conseil": "vérifier", "modele": "inconnu", "etat": "inconnu"}
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 def send_telegram_text(msg: str, retries=3):
@@ -263,45 +228,33 @@ def send_discord(msg: str, url: str = None, photo_url: str = None, retries=3):
             log.error(f"Discord ({i+1}) : {e}")
 
 # ── Envoi annonce ─────────────────────────────────────────────────────────────
-def send_item(item: dict, vraie_panne: bool, raison: str, ai: dict):
-    try:
-        price = float(item["price"])
-        urgent = price <= 5
-        renta = calcul_rentabilite(price)
-    except ValueError:
-        urgent = False
-        renta = None
-
-    shipping = item.get("shipping")
-    total_str = ""
-    if shipping:
-        try:
-            total_str = f"\n📦 Livraison : {shipping} € (total : {float(item['price'])+float(shipping):.2f} €)"
-        except ValueError:
-            pass
-
-    panne_str = f"\n🔧 Panne : <i>{raison}</i>" if vraie_panne and raison else ""
+def send_item(item: dict, ai: dict):
+    urgent = ai.get("urgence", False)
 
     conseil_emoji = {"acheter": "🟢", "ignorer": "🔴", "vérifier": "🟡"}.get(ai.get("conseil", ""), "🤖")
+    icloud_str = "\n🔒 <b>Bloqué iCloud</b>" if ai.get("bloque_icloud") else ""
+    etat_str   = f"\n🔧 État : <i>{ai.get('etat', '?')}</i>" if ai.get("etat") else ""
+    modele_str = f"\n📱 Modèle : <b>{ai.get('modele', '?')}</b>" if ai.get("modele") else ""
+
+    marche_str = ""
+    if ai.get("valeur_marche") and ai.get("pourcentage_sous_marche"):
+        marche_str = (f"\n📉 Valeur marché : ~{ai.get('valeur_marche')}€ "
+                      f"(<b>-{ai.get('pourcentage_sous_marche')}% sous le marché</b>)")
+
     ai_str = ""
     if ai.get("resume"):
         ai_str = (f"\n🤖 <b>IA :</b> {ai.get('resume', '')}"
                   f"\n{conseil_emoji} <b>{ai.get('conseil', '?')}</b> — {ai.get('raison', '')}"
                   f"\n🎯 Confiance : {ai.get('confiance', '?')}%")
 
-    renta_str = ""
-    if renta:
-        emoji = "💰" if renta["rentable"] else "⚠️"
-        renta_str = f"\n{emoji} Achat+répa={renta['cout']}€ → profit <b>{renta['profit']}€</b> (ROI {renta['roi']}%)"
-
     score = item.get("score", 0)
-    if urgent:        header = "🚨🚨 URGENCE — PRIX INCROYABLE 🚨🚨"
+    if urgent:        header = "🚨🚨 URGENCE — TRÈS EN DESSOUS DU MARCHÉ 🚨🚨"
     elif score >= 70: header = "🔥 SUPER AFFAIRE"
     elif score >= 40: header = "✅ Bonne affaire"
     else:             header = "📌 Annonce"
 
     caption = (f"{header}\n{item['source']} — <b>{item['title']}</b>\n"
-               f"💶 {item['price']} €{total_str}{panne_str}{ai_str}{renta_str}\n"
+               f"💶 {item['price']} €{modele_str}{icloud_str}{etat_str}{marche_str}{ai_str}\n"
                f"📊 Score : {score}/100\n"
                f"🔗 <a href=\"{item['url']}\">Voir l'annonce</a>")
 
@@ -327,90 +280,83 @@ def fetch_vinted() -> list:
     except Exception as e:
         log.warning(f"Vinted session : {e}")
         return []
-    params = {"search_text": "manette ps5", "order": "newest_first",
-              "per_page": "100", "price_to": str(PRIX_MAX)}
-    try:
-        r = session.get(f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
-                        headers=headers, timeout=15)
-        r.raise_for_status()
-        results = []
-        for i in r.json().get("items", []):
-            photo = None
-            photos = i.get("photos", [])
-            if photos:
-                photo = photos[0].get("url") or photos[0].get("full_size_url")
-            results.append({
-                "id":          f"vinted_{i['id']}",
-                "title":       i.get("title", "Sans titre"),
-                "description": i.get("description", ""),
-                "price":       parse_price(i.get("price")),
-                "shipping":    parse_price(i.get("service_fee")) if i.get("service_fee") else None,
-                "url":         f"https://www.vinted.fr/items/{i['id']}",
-                "photo":       photo,
-                "source":      "Vinted 🟢",
-                "title_hash":  title_hash(i.get("title", "")),
-            })
-        return results
-    except Exception as e:
-        log.error(f"Erreur fetch Vinted : {e}")
-        return []
+
+    all_results = []
+    for model in ["iphone 11", "iphone 12", "iphone 13", "iphone 14", "iphone 15", "iphone 16"]:
+        params = {"search_text": model, "order": "newest_first",
+                  "per_page": "50", "price_to": str(PRIX_MAX)}
+        try:
+            r = session.get(f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
+                            headers=headers, timeout=15)
+            r.raise_for_status()
+            for i in r.json().get("items", []):
+                photo = None
+                photos = i.get("photos", [])
+                if photos:
+                    photo = photos[0].get("url") or photos[0].get("full_size_url")
+                all_results.append({
+                    "id":          f"vinted_{i['id']}",
+                    "title":       i.get("title", "Sans titre"),
+                    "description": i.get("description", ""),
+                    "price":       parse_price(i.get("price")),
+                    "url":         f"https://www.vinted.fr/items/{i['id']}",
+                    "photo":       photo,
+                    "source":      "Vinted 🟢",
+                    "title_hash":  title_hash(i.get("title", "")),
+                })
+        except Exception as e:
+            log.error(f"Erreur fetch Vinted ({model}) : {e}")
+
+    return all_results
 
 # ── Scraping Leboncoin (RSS) ──────────────────────────────────────────────────
 def fetch_leboncoin() -> list:
     import xml.etree.ElementTree as ET
-    rss_url = "https://www.leboncoin.fr/rss?text=manette+ps5&price_max=30&regions=12&shippable=1"
-    try:
-        r = requests.get(rss_url, headers={"User-Agent": "RSSReader/1.0"}, timeout=15)
-        r.raise_for_status()
-        root = ET.fromstring(r.content)
-        ns = {"lbc": "https://www.leboncoin.fr"}
-        results = []
-        for item in root.findall(".//item"):
-            link  = item.findtext("link", "")
-            guid  = item.findtext("guid", link)
-            title = item.findtext("title", "Sans titre")
-            desc  = re.sub(r"<[^>]+>", "", item.findtext("description", ""))
-            price_el = item.find("lbc:price", ns)
-            price = price_el.text if price_el is not None else "?"
-            photo = None
-            enc = item.find("enclosure")
-            if enc is not None:
-                photo = enc.get("url")
-            results.append({
-                "id":          f"lbc_{guid}",
-                "title":       title,
-                "description": desc,
-                "price":       price,
-                "shipping":    None,
-                "url":         link,
-                "photo":       photo,
-                "source":      "Leboncoin 🔴",
-                "title_hash":  title_hash(title),
-            })
-        return results
-    except Exception as e:
-        log.error(f"Erreur fetch Leboncoin : {e}")
-        return []
+    results = []
+    for model in ["iphone+11", "iphone+12", "iphone+13", "iphone+14", "iphone+15", "iphone+16"]:
+        rss_url = f"https://www.leboncoin.fr/rss?text={model}&price_max={PRIX_MAX}&regions=12&shippable=1"
+        try:
+            r = requests.get(rss_url, headers={"User-Agent": "RSSReader/1.0"}, timeout=15)
+            r.raise_for_status()
+            root = ET.fromstring(r.content)
+            ns = {"lbc": "https://www.leboncoin.fr"}
+            for item in root.findall(".//item"):
+                link  = item.findtext("link", "")
+                guid  = item.findtext("guid", link)
+                title = item.findtext("title", "Sans titre")
+                desc  = re.sub(r"<[^>]+>", "", item.findtext("description", ""))
+                price_el = item.find("lbc:price", ns)
+                price = price_el.text if price_el is not None else "?"
+                photo = None
+                enc = item.find("enclosure")
+                if enc is not None:
+                    photo = enc.get("url")
+                results.append({
+                    "id":          f"lbc_{guid}",
+                    "title":       title,
+                    "description": desc,
+                    "price":       price,
+                    "url":         link,
+                    "photo":       photo,
+                    "source":      "Leboncoin 🔴",
+                    "title_hash":  title_hash(title),
+                })
+        except Exception as e:
+            log.error(f"Erreur fetch Leboncoin ({model}) : {e}")
+    return results
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    log.info("🚀 Tracker démarré — Version Finale Stable")
+    log.info("🚀 Tracker iPhone démarré — 11 à 17 Pro Max ≤ 150€")
     seen        = load_seen()
-    stats       = load_stats()
     seen_hashes = set()
 
     all_items = fetch_vinted() + fetch_leboncoin()
     fresh = [i for i in all_items if i["id"] not in seen]
 
-    relevant = []
-    for item in fresh:
-        ok, vraie_panne, raison = is_relevant(item)
-        if ok:
-            item["vraie_panne"]  = vraie_panne
-            item["raison_panne"] = raison
-            relevant.append(item)
+    relevant = [i for i in fresh if is_relevant(i)]
 
-    # Déduplication cross-platform
+    # Déduplication
     deduped = []
     for item in relevant:
         h = item["title_hash"]
@@ -422,7 +368,7 @@ def main():
     for item in deduped:
         ai = analyse_claude(item)
         item["ai"] = ai
-        item["score"] = compute_score(item, item["vraie_panne"], ai)
+        item["score"] = compute_score(item, ai)
 
     deduped.sort(key=lambda x: x["score"], reverse=True)
 
@@ -434,8 +380,7 @@ def main():
                 log.info(f"IA ignoré : {item['title']}")
                 seen.add(item["id"])
                 continue
-            send_item(item, item["vraie_panne"], item["raison_panne"], ai)
-            update_stats(item, stats)
+            send_item(item, ai)
             seen.add(item["id"])
     else:
         log.info(f"Rien de pertinent ({len(fresh)} annonce(s) examinée(s))")
@@ -443,7 +388,6 @@ def main():
     for i in fresh:
         seen.add(i["id"])
     save_seen(seen)
-    save_stats(stats)
 
 if __name__ == "__main__":
     main()

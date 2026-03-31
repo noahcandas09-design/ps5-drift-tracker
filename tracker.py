@@ -38,11 +38,29 @@ CONDITIONS_BOOST = {
 }
 
 KEYWORDS_EXCLUDE = [
-    "coque", "housse", "étui", "protection", "verre trempé",
-    "chargeur", "câble", "cable", "adaptateur", "airpods",
-    "ipad", "macbook", "watch", "samsung", "xiaomi", "huawei",
-    "accessoire", "sticker", "skin", "support", "dock",
-    "lot accessoires", "occasion très bon état complet",
+    # Accessoires
+    "coque", "housse", "étui", "protection", "verre trempé", "film",
+    "chargeur", "câble", "cable", "adaptateur", "lightning", "usb",
+    "airpods", "écouteurs", "casque", "oreillette",
+    "sticker", "skin", "autocollant", "wrap",
+    "support", "dock", "stand", "holder", "bras",
+    "batterie externe", "powerbank", "chargeur sans fil",
+    "magsafe", "mag safe",
+    # Boites et emballages
+    "boite", "boîte", "box", "emballage", "packaging",
+    "manuel", "notice", "documentation",
+    # Autres appareils
+    "ipad", "macbook", "imac", "apple watch", "watch",
+    "samsung", "xiaomi", "huawei", "oppo", "oneplus",
+    "android", "pixel", "sony xperia",
+    # Pièces détachées
+    "écran seul", "vitre seule", "chassis", "châssis",
+    "nappe", "connecteur", "pièce détachée", "pièces détachées",
+    "face avant", "face arrière", "vitre arrière",
+    # Accessoires gaming/photo
+    "manette", "objectif", "lentille",
+    # Lots
+    "lot de", "lot d'", "pack accessoires", "lot accessoires",
 ]
 
 logging.basicConfig(
@@ -158,7 +176,9 @@ Questions clés :
 - Compare le prix demandé avec la valeur marché réelle de ce modèle dans cet état en France en 2025
 - Est-ce une urgence absolue (prix très en dessous du marché) ?
 
-Si ce n'est PAS un iPhone Apple réel → conseil = ignorer, confiance = 95
+Si ce n'est PAS un téléphone iPhone physique complet (ex: coque, boite, chargeur, câble, écouteurs, pièce détachée, accessoire, autre marque) → conseil = ignorer, confiance = 99
+
+Je veux UNIQUEMENT des iPhones complets physiques, même cassés, même bloqués iCloud. Rien d'autre.
 
 Valeurs marché approximatives en France (état cassé/bloqué) :
 - iPhone 11 cassé : 30-60€ | bloqué iCloud : 20-40€

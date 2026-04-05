@@ -127,9 +127,24 @@ def is_relevant(item: dict) -> bool:
     if not any(model in title for model in IPHONE_MODELS):
         return False
 
-    # Exclusions
+    # Exclusions strictes
     if any(kw in title for kw in KEYWORDS_EXCLUDE):
         return False
+
+    # Exclusions supplémentaires par patterns
+    patterns_exclus = [
+        r"^coque", r"^housse", r"^étui", r"^verre",
+        r"^chargeur", r"^câble", r"^cable", r"^batterie",
+        r"^boite", r"^boîte", r"^box", r"^écran\s",
+        r"^vitre", r"^lot\s", r"^pack\s", r"^airpod",
+        r"pour iphone",  # "coque pour iphone 13" etc
+        r"iphone.{0,10}coque", r"iphone.{0,10}housse",
+        r"iphone.{0,10}étui", r"iphone.{0,10}verre",
+        r"iphone.{0,10}chargeur", r"iphone.{0,10}câble",
+    ]
+    for pat in patterns_exclus:
+        if re.search(pat, title):
+            return False
 
     return True
 

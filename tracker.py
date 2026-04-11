@@ -131,57 +131,33 @@ def analyse_claude(item: dict) -> dict:
     if not ANTHROPIC_API_KEY:
         return default
     try:
-        content = []
-
-        # Charge la photo
-        if item.get("photo"):
-            try:
-                img = requests.get(item["photo"], timeout=10)
-                img.raise_for_status()
-                ctype = img.headers.get("content-type", "image/jpeg").split(";")[0]
-                content.append({
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": ctype,
-                               "data": base64.b64encode(img.content).decode()}
-                })
-            except Exception as e:
-                log.warning(f"Photo : {e}")
-
-        content.append({"type": "text", "text": f"""Expert en rachat/réparation iPhone. Analyse cette annonce.
+        prompt = f"""Expert en rachat/réparation iPhone. Analyse cette annonce.
 
 Titre: {item['title']}
 Description: {item.get('description', 'Aucune')}
 Prix: {item['price']} €
 
-MISSION : Détermine si c'est un iPhone Apple CASSÉ et COMPLET (le téléphone entier).
+RÈGLE ABSOLUE : réponds UNIQUEMENT en JSON valide, sans markdown.
 
-REGARDE LA PHOTO en priorité :
-- Tu vois un téléphone entier cassé/fissuré → potentiellement OK
-- Tu vois une coque, accessoire, câble, boîte → ignorer 99
-
-RÈGLES STRICTES :
-- iPhone cassé physiquement (écran, vitre, batterie, ne s'allume pas) → analyser
-- iPhone neuf ou très bon état → ignorer (pas notre cible)
-- Accessoire, coque, boîte, câble, pièce → ignorer 99
-- Autre marque → ignorer 99
+C'est un iPhone cassé si : écran cassé, fissuré, ne s'allume pas, batterie HS, panne, pour pièce, à réparer
+C'est À IGNORER si : neuf, reconditionné, très bon état, bon état, iPhone X/XR/XS/5/6/7/8, coque, accessoire, autre marque, bloqué iCloud
 
 Valeurs marché France iPhones cassés :
 iPhone 11: 40-70€ | 12: 60-100€ | 13: 90-140€ | 14: 130-190€ | 15: 160-230€ | 16: 210-280€
 
 urgence = true si prix ≥30% sous valeur marché
 
-JSON uniquement, sans markdown :
-{{"est_iphone_casse": true, "modele": "iPhone 13", "etat": "écran fissuré", "valeur_marche": 110, "pourcentage_sous_marche": 35, "urgence": false, "confiance": 90, "resume": "iPhone 13 écran cassé", "conseil": "acheter", "raison": "Bon prix pour ce modèle"}}
+{{"est_iphone_casse": true, "modele": "iPhone 13", "etat": "écran fissuré", "valeur_marche": 110, "pourcentage_sous_marche": 35, "urgence": false, "confiance": 90, "resume": "iPhone 13 écran cassé", "conseil": "acheter", "raison": "Bon prix"}}
 
-conseil = acheter / vérifier / ignorer"""})
+conseil = acheter / vérifier / ignorer"""
 
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 400,
-                  "messages": [{"role": "user", "content": content}]},
-            timeout=20
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 300,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=15
         )
         r.raise_for_status()
         text = re.sub(r"```json|```", "", r.json()["content"][0]["text"]).strip()

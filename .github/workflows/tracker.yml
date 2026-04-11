@@ -2,7 +2,7 @@ name: PS5 Drift Tracker
 
 on:
   schedule:
-    - cron: "*/5 * * * *"  # toutes les 5 minutes
+    - cron: "*/2 * * * *"  # toutes les 2 minutes
   workflow_dispatch:        # permet de lancer manuellement
 
 jobs:

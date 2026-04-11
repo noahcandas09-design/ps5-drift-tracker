@@ -1,17 +1,15 @@
 """
-Tracker Vinted + Leboncoin → Telegram + Discord
-iPhones 11 à 17 CASSÉS uniquement ≤ 150€
-Pas de coques, pas d'accessoires, pas de bloqués iCloud
+Tracker iPhone Cassé — Expert Edition
+Stratégie : recherches ciblées avec mots-clés de réparateur
 """
 
-import os, json, logging, requests, hashlib, re
+import os, json, logging, requests, hashlib, re, base64
 from pathlib import Path
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Configuration ─────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
@@ -19,51 +17,36 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 GIST_TOKEN          = os.getenv("GIST_TOKEN")
 GIST_ID             = os.getenv("GIST_ID")
 
-SEEN_FILE  = Path("seen_ids.json")
-STATS_FILE = Path("stats.json")
-PRIX_MAX   = 150
+SEEN_FILE = Path("seen_ids.json")
+PRIX_MAX  = 150
+PRIX_MIN  = 10  # en dessous = forcément pas un iPhone complet
 
-IPHONE_MODELS = [
-    "iphone 11", "iphone 12", "iphone 13",
-    "iphone 14", "iphone 15", "iphone 16", "iphone 17",
+# Recherches exactes comme un réparateur ferait
+# On cherche directement les bonnes combinaisons sur Vinted
+SEARCH_QUERIES = [
+    "iphone cassé",
+    "iphone fissuré",
+    "iphone écran cassé",
+    "iphone pour pièce",
+    "iphone à réparer",
+    "iphone hs",
+    "iphone panne",
+    "iphone ne s'allume pas",
+    "iphone vitre cassée",
+    "iphone écran fissuré",
 ]
 
-# Au moins un de ces mots DOIT être présent (dommage physique)
-MOTS_CASSE_OBLIGATOIRE = [
-    "cassé", "cassée", "casse", "fissuré", "fissurée", "fissure",
-    "écran cassé", "vitre cassée", "écran fissuré", "vitre fissurée",
-    "hs", "panne", "broken", "pour pièce", "à réparer",
-    "ne s'allume", "batterie hs", "défaut", "défectueux", "défectueuse",
-    "problème", "tactile", "mort", "ne fonctionne", "ne marche",
-    "abîmé", "abimé", "rayé", "rayure",
+# Mots qui prouvent que c'est un accessoire → rejet immédiat
+MOTS_ACCESSOIRE = [
+    "coque", "housse", "étui", "verre trempé", "film",
+    "chargeur", "câble", "cable", "airpods", "écouteurs",
+    "support", "dock", "boite", "boîte", "box",
+    "sticker", "skin", "batterie externe", "powerbank",
+    "ipad", "macbook", "watch", "samsung", "huawei",
+    "xiaomi", "oppo", "pièce détachée", "écran seul",
+    "vitre seule", "chassis", "nappe", "lot d", "lot de",
+    "magsafe", "adaptateur",
 ]
-
-# Ces mots = exclusion immédiate
-MOTS_EXCLUS = [
-    "coque", "housse", "étui", "protection", "verre trempé", "film protecteur",
-    "chargeur", "câble", "cable", "adaptateur", "lightning", "usb-c",
-    "airpods", "écouteurs", "casque", "oreillette",
-    "sticker", "skin", "autocollant",
-    "support", "dock", "stand", "holder",
-    "batterie externe", "powerbank",
-    "magsafe", "mag safe",
-    "boite", "boîte", "box", "emballage",
-    "ipad", "macbook", "apple watch", "watch",
-    "samsung", "xiaomi", "huawei", "oppo", "oneplus", "android",
-    "écran seul", "vitre seule", "chassis", "nappe", "connecteur",
-    "pièce détachée", "face avant", "face arrière",
-    "lot de", "lot d'", "pack accessoires",
-    # Bloqué iCloud exclus
-    "icloud", "bloqué icloud", "activation lock", "bloqué activation",
-]
-
-# Boost de score selon l'état
-CONDITIONS_BOOST = {
-    "écran cassé": 25, "vitre cassée": 25, "fissuré": 20,
-    "batterie": 15, "hs": 20, "panne": 20, "cassé": 15,
-    "broken": 20, "pour pièce": 25, "à réparer": 25,
-    "ne s'allume": 30, "défectueux": 15,
-}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,8 +65,7 @@ def load_seen() -> set:
                 timeout=10
             )
             r.raise_for_status()
-            content = r.json()["files"]["seen_ids.json"]["content"]
-            return set(json.loads(content))
+            return set(json.loads(r.json()["files"]["seen_ids.json"]["content"]))
         except Exception as e:
             log.error(f"Gist load : {e}")
     if SEEN_FILE.exists():
@@ -105,24 +87,21 @@ def save_seen(seen: set):
     SEEN_FILE.write_text(json.dumps(list(seen)))
 
 def title_hash(title: str) -> str:
-    normalized = "".join(c for c in title.lower() if c.isalnum())
-    return hashlib.md5(normalized.encode()).hexdigest()[:12]
+    return hashlib.md5("".join(c for c in title.lower() if c.isalnum()).encode()).hexdigest()[:12]
 
 def parse_price(raw) -> str:
     if isinstance(raw, dict):
         return str(raw.get("amount", "?"))
     return str(raw) if raw is not None else "?"
 
-# ── Filtrage strict ───────────────────────────────────────────────────────────
-def is_relevant(item: dict) -> bool:
+# ── Filtre rapide (avant IA) ──────────────────────────────────────────────────
+def pre_filter(item: dict) -> bool:
     title = item["title"].lower()
-    full  = title + " " + item.get("description", "").lower()
 
-    # Prix minimum — un iPhone cassé coûte au moins 15€
+    # Prix cohérent
     try:
-        if float(item["price"]) < 15:
-            return False
-        if float(item["price"]) > PRIX_MAX:
+        price = float(item["price"])
+        if price < PRIX_MIN or price > PRIX_MAX:
             return False
     except ValueError:
         pass
@@ -131,122 +110,127 @@ def is_relevant(item: dict) -> bool:
     if "iphone" not in title:
         return False
 
-    # Doit contenir un modèle valide
-    if not any(model in title for model in IPHONE_MODELS):
+    # Rejet immédiat si mot d'accessoire dans le titre
+    if any(kw in title for kw in MOTS_ACCESSOIRE):
         return False
 
-    # Exclusions strictes
-    if any(kw in title for kw in MOTS_EXCLUS):
-        return False
-
-    # Exclusions par regex
-    patterns_exclus = [
-        r"pour iphone", r"iphone.{0,20}coque",
-        r"iphone.{0,20}housse", r"iphone.{0,20}étui",
-        r"iphone.{0,20}verre", r"iphone.{0,20}chargeur",
-        r"iphone.{0,20}câble", r"iphone.{0,20}cable",
-        r"^coque", r"^housse", r"^verre", r"^chargeur",
-        r"^câble", r"^cable", r"^batterie", r"^boite",
-        r"^boîte", r"^écran\s", r"^vitre", r"^lot\s",
-        r"^pack\s", r"^airpod", r"^étui",
-    ]
-    for pat in patterns_exclus:
+    # Rejet par patterns
+    for pat in [r"^coque", r"^housse", r"^verre", r"^chargeur", r"^câble",
+                r"^cable", r"^boite", r"^boîte", r"^lot\s", r"^pack\s",
+                r"pour iphone\s*(1[1-7])", r"iphone.{0,15}coque",
+                r"iphone.{0,15}housse", r"iphone.{0,15}verre"]:
         if re.search(pat, title):
             return False
 
     return True
 
-# ── Score ─────────────────────────────────────────────────────────────────────
-def compute_score(item: dict, ai: dict) -> int:
-    score = 0
-    full = item["title"].lower() + " " + item.get("description", "").lower()
-
-    try:
-        price = float(item["price"])
-        if price <= 20:    score += 70
-        elif price <= 50:  score += 50
-        elif price <= 80:  score += 30
-        elif price <= 100: score += 20
-        else:              score += 10
-    except ValueError:
-        pass
-
-    for kw, pts in CONDITIONS_BOOST.items():
-        if kw in full:
-            score += pts
-
-    score += int(ai.get("confiance", 50) * 0.1)
-    return min(score, 100)
-
-# ── Analyse Claude AI ─────────────────────────────────────────────────────────
+# ── Analyse IA avec photo ─────────────────────────────────────────────────────
 def analyse_claude(item: dict) -> dict:
+    default = {"est_iphone_casse": False, "confiance": 50, "conseil": "ignorer",
+               "modele": "?", "etat": "?", "urgence": False, "resume": "", "raison": ""}
     if not ANTHROPIC_API_KEY:
-        return {"confiance": 50, "resume": "", "conseil": "vérifier", "modele": "inconnu", "etat": "inconnu", "urgence": False}
+        return default
     try:
-        prompt = f"""Tu es expert en reconditionnement iPhone. Analyse cette annonce.
+        content = []
+
+        # Charge la photo
+        if item.get("photo"):
+            try:
+                img = requests.get(item["photo"], timeout=10)
+                img.raise_for_status()
+                ctype = img.headers.get("content-type", "image/jpeg").split(";")[0]
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": ctype,
+                               "data": base64.b64encode(img.content).decode()}
+                })
+            except Exception as e:
+                log.warning(f"Photo : {e}")
+
+        content.append({"type": "text", "text": f"""Expert en rachat/réparation iPhone. Analyse cette annonce.
 
 Titre: {item['title']}
 Description: {item.get('description', 'Aucune')}
 Prix: {item['price']} €
 
-RÈGLE ABSOLUE : réponds UNIQUEMENT en JSON valide, sans markdown.
+MISSION : Détermine si c'est un iPhone Apple CASSÉ et COMPLET (le téléphone entier).
 
-CRITÈRES STRICTS — si UN SEUL n'est pas respecté → ignorer avec confiance 99 :
-1. C'est un iPhone Apple PHYSIQUE ET COMPLET (le téléphone entier)
-2. Il est CASSÉ physiquement (écran, vitre, batterie défaillante, ne s'allume pas...)
-3. Ce N'EST PAS : coque, housse, chargeur, câble, boîte, pièce détachée, accessoire, verre trempé, film, support, dock, écouteurs
-4. Le prix est cohérent avec un iPhone cassé (minimum ~15-20€)
+REGARDE LA PHOTO en priorité :
+- Tu vois un téléphone entier cassé/fissuré → potentiellement OK
+- Tu vois une coque, accessoire, câble, boîte → ignorer 99
 
-Valeurs marché France (iPhone cassé, écran fissuré) :
-- iPhone 11 : 40-70€
-- iPhone 12 : 60-100€  
-- iPhone 13 : 90-140€
-- iPhone 14 : 130-190€
-- iPhone 15 : 160-230€
-- iPhone 16 : 210-280€
+RÈGLES STRICTES :
+- iPhone cassé physiquement (écran, vitre, batterie, ne s'allume pas) → analyser
+- iPhone neuf ou très bon état → ignorer (pas notre cible)
+- Accessoire, coque, boîte, câble, pièce → ignorer 99
+- Autre marque → ignorer 99
 
-urgence = true si prix 30%+ sous valeur marché estimée
+Valeurs marché France iPhones cassés :
+iPhone 11: 40-70€ | 12: 60-100€ | 13: 90-140€ | 14: 130-190€ | 15: 160-230€ | 16: 210-280€
 
-Format JSON :
-{{"est_iphone_casse": true, "modele": "iPhone 13", "etat": "écran cassé", "valeur_marche": 110, "pourcentage_sous_marche": 40, "urgence": true, "confiance": 92, "resume": "iPhone 13 écran fissuré", "conseil": "acheter", "raison": "40% sous le marché"}}
+urgence = true si prix ≥30% sous valeur marché
 
-conseil = acheter / vérifier / ignorer"""
+JSON uniquement, sans markdown :
+{{"est_iphone_casse": true, "modele": "iPhone 13", "etat": "écran fissuré", "valeur_marche": 110, "pourcentage_sous_marche": 35, "urgence": false, "confiance": 90, "resume": "iPhone 13 écran cassé", "conseil": "acheter", "raison": "Bon prix pour ce modèle"}}
+
+conseil = acheter / vérifier / ignorer"""})
 
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
             json={"model": "claude-haiku-4-5-20251001", "max_tokens": 400,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=15
+                  "messages": [{"role": "user", "content": content}]},
+            timeout=20
         )
         r.raise_for_status()
-        text = r.json()["content"][0]["text"].strip()
-        text = re.sub(r"```json|```", "", text).strip()
+        text = re.sub(r"```json|```", "", r.json()["content"][0]["text"]).strip()
         return json.loads(text)
     except Exception as e:
-        log.error(f"Claude API : {e}")
-        return {"confiance": 50, "resume": "", "conseil": "vérifier", "modele": "inconnu", "etat": "inconnu", "urgence": False}
+        log.error(f"Claude : {e}")
+        return default
+
+# ── Score ─────────────────────────────────────────────────────────────────────
+def compute_score(item: dict, ai: dict) -> int:
+    score = 0
+    try:
+        p = float(item["price"])
+        if p <= 20:    score += 70
+        elif p <= 50:  score += 50
+        elif p <= 80:  score += 30
+        elif p <= 100: score += 20
+        else:          score += 10
+    except ValueError:
+        pass
+    score += int(ai.get("confiance", 50) * 0.15)
+    if ai.get("urgence"):
+        score += 20
+    return min(score, 100)
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 def send_telegram_text(msg: str, retries=3):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     for i in range(retries):
         try:
-            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg,
-                                     "parse_mode": "HTML", "disable_web_page_preview": False}, timeout=10).raise_for_status()
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg,
+                      "parse_mode": "HTML", "disable_web_page_preview": False},
+                timeout=10).raise_for_status()
             return
         except Exception as e:
-            log.error(f"Telegram ({i+1}) : {e}")
+            log.error(f"TG text ({i+1}): {e}")
 
 def send_telegram_photo(photo_url: str, caption: str, retries=3):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     for i in range(retries):
         try:
-            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "photo": photo_url,
-                                     "caption": caption, "parse_mode": "HTML"}, timeout=10).raise_for_status()
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
+                json={"chat_id": TELEGRAM_CHAT_ID, "photo": photo_url,
+                      "caption": caption, "parse_mode": "HTML"},
+                timeout=10).raise_for_status()
             return
         except Exception as e:
-            log.error(f"Telegram photo ({i+1}) : {e}")
+            log.error(f"TG photo ({i+1}): {e}")
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 def send_discord(msg: str, url: str = None, photo_url: str = None, retries=3):
@@ -263,37 +247,34 @@ def send_discord(msg: str, url: str = None, photo_url: str = None, retries=3):
             requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10).raise_for_status()
             return
         except Exception as e:
-            log.error(f"Discord ({i+1}) : {e}")
+            log.error(f"Discord ({i+1}): {e}")
 
-# ── Envoi annonce ─────────────────────────────────────────────────────────────
+# ── Envoi ─────────────────────────────────────────────────────────────────────
 def send_item(item: dict, ai: dict):
+    conseil_emoji = {"acheter": "🟢", "vérifier": "🟡", "ignorer": "🔴"}.get(ai.get("conseil", ""), "🤖")
+    score  = item.get("score", 0)
     urgent = ai.get("urgence", False)
-
-    conseil_emoji = {"acheter": "🟢", "ignorer": "🔴", "vérifier": "🟡"}.get(ai.get("conseil", ""), "🤖")
-    modele_str = f"\n📱 <b>{ai.get('modele', '?')}</b>" if ai.get("modele") else ""
-    etat_str   = f"\n🔧 État : <i>{ai.get('etat', '?')}</i>" if ai.get("etat") else ""
 
     marche_str = ""
     if ai.get("valeur_marche") and ai.get("pourcentage_sous_marche"):
-        marche_str = (f"\n📉 Valeur marché : ~{ai.get('valeur_marche')}€ "
-                      f"(<b>-{ai.get('pourcentage_sous_marche')}% sous le marché</b>)")
+        marche_str = f"\n📉 Marché : ~{ai['valeur_marche']}€ (<b>-{ai['pourcentage_sous_marche']}% sous le marché</b>)"
 
-    ai_str = ""
-    if ai.get("resume"):
-        ai_str = (f"\n🤖 {ai.get('resume', '')}"
-                  f"\n{conseil_emoji} <b>{ai.get('conseil', '?')}</b> — {ai.get('raison', '')}"
-                  f"\n🎯 Confiance : {ai.get('confiance', '?')}%")
+    header = ("🚨🚨 URGENCE 🚨🚨" if urgent else
+              "🔥 SUPER AFFAIRE" if score >= 70 else
+              "✅ Bonne affaire" if score >= 40 else "📌 Annonce")
 
-    score = item.get("score", 0)
-    if urgent:        header = "🚨🚨 URGENCE — TRÈS EN DESSOUS DU MARCHÉ 🚨🚨"
-    elif score >= 70: header = "🔥 SUPER AFFAIRE"
-    elif score >= 40: header = "✅ Bonne affaire"
-    else:             header = "📌 Annonce"
-
-    caption = (f"{header}\n{item['source']} — <b>{item['title']}</b>\n"
-               f"💶 {item['price']} €{modele_str}{etat_str}{marche_str}{ai_str}\n"
-               f"📊 Score : {score}/100\n"
-               f"🔗 <a href=\"{item['url']}\">Voir l'annonce</a>")
+    caption = (
+        f"{header}\n"
+        f"{item['source']} — <b>{item['title']}</b>\n"
+        f"💶 {item['price']} €\n"
+        f"📱 <b>{ai.get('modele', '?')}</b>\n"
+        f"🔧 {ai.get('etat', '?')}"
+        f"{marche_str}\n"
+        f"🤖 {ai.get('resume', '')}\n"
+        f"{conseil_emoji} <b>{ai.get('conseil', '?')}</b> — {ai.get('raison', '')}\n"
+        f"🎯 Confiance : {ai.get('confiance', '?')}% | Score : {score}/100\n"
+        f"🔗 <a href=\"{item['url']}\">Voir l'annonce</a>"
+    )
 
     if item.get("photo"):
         send_telegram_photo(item["photo"], caption)
@@ -318,20 +299,25 @@ def fetch_vinted() -> list:
         log.warning(f"Vinted session : {e}")
         return []
 
-    all_results = []
-    for model in ["iphone 11", "iphone 12", "iphone 13", "iphone 14", "iphone 15", "iphone 16"]:
-        params = {"search_text": model, "order": "newest_first",
-                  "per_page": "100", "price_to": str(PRIX_MAX)}
+    results = []
+    seen_ids = set()
+    for query in SEARCH_QUERIES:
+        params = {"search_text": query, "order": "newest_first",
+                  "per_page": "50", "price_to": str(PRIX_MAX)}
         try:
-            r = session.get(f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
-                            headers=headers, timeout=15)
+            r = session.get(
+                f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
+                headers=headers, timeout=15)
             r.raise_for_status()
             for i in r.json().get("items", []):
+                if i["id"] in seen_ids:
+                    continue
+                seen_ids.add(i["id"])
                 photo = None
                 photos = i.get("photos", [])
                 if photos:
                     photo = photos[0].get("url") or photos[0].get("full_size_url")
-                all_results.append({
+                results.append({
                     "id":          f"vinted_{i['id']}",
                     "title":       i.get("title", "Sans titre"),
                     "description": i.get("description", ""),
@@ -342,17 +328,21 @@ def fetch_vinted() -> list:
                     "title_hash":  title_hash(i.get("title", "")),
                 })
         except Exception as e:
-            log.error(f"Vinted ({model}) : {e}")
+            log.error(f"Vinted ({query}): {e}")
 
-    return all_results
+    return results
 
 # ── Scraping Leboncoin ────────────────────────────────────────────────────────
 def fetch_leboncoin() -> list:
     import xml.etree.ElementTree as ET
     results = []
-    for model in ["iphone+11+cassé", "iphone+12+cassé", "iphone+13+cassé",
-                  "iphone+14+cassé", "iphone+15+cassé", "iphone+16+cassé"]:
-        rss_url = f"https://www.leboncoin.fr/rss?text={model}&price_max={PRIX_MAX}&regions=12&shippable=1"
+    seen_ids = set()
+    queries_lbc = [
+        "iphone+cassé", "iphone+fissuré", "iphone+panne",
+        "iphone+pour+pièce", "iphone+hs", "iphone+écran+cassé"
+    ]
+    for query in queries_lbc:
+        rss_url = f"https://www.leboncoin.fr/rss?text={query}&price_max={PRIX_MAX}&shippable=1"
         try:
             r = requests.get(rss_url, headers={"User-Agent": "RSSReader/1.0"}, timeout=15)
             r.raise_for_status()
@@ -361,6 +351,9 @@ def fetch_leboncoin() -> list:
             for item in root.findall(".//item"):
                 link  = item.findtext("link", "")
                 guid  = item.findtext("guid", link)
+                if guid in seen_ids:
+                    continue
+                seen_ids.add(guid)
                 title = item.findtext("title", "Sans titre")
                 desc  = re.sub(r"<[^>]+>", "", item.findtext("description", ""))
                 price_el = item.find("lbc:price", ns)
@@ -380,45 +373,51 @@ def fetch_leboncoin() -> list:
                     "title_hash":  title_hash(title),
                 })
         except Exception as e:
-            log.error(f"Leboncoin ({model}) : {e}")
+            log.error(f"Leboncoin ({query}): {e}")
     return results
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    log.info("🚀 Tracker iPhone Cassé démarré")
+    log.info("🚀 Tracker iPhone Cassé — Expert Edition")
     seen        = load_seen()
     seen_hashes = set()
 
     all_items = fetch_vinted() + fetch_leboncoin()
-    fresh = [i for i in all_items if i["id"] not in seen]
-    relevant = [i for i in fresh if is_relevant(i)]
+    log.info(f"Total récupérés : {len(all_items)}")
 
+    fresh = [i for i in all_items if i["id"] not in seen]
+    log.info(f"Nouveaux : {len(fresh)}")
+
+    # Filtre rapide
+    pre_filtered = [i for i in fresh if pre_filter(i)]
+    log.info(f"Après pré-filtre : {len(pre_filtered)}")
+
+    # Déduplication
     deduped = []
-    for item in relevant:
+    for item in pre_filtered:
         h = item["title_hash"]
         if h not in seen_hashes:
             seen_hashes.add(h)
             deduped.append(item)
 
+    log.info(f"Après dédup : {len(deduped)}")
+
+    sent = 0
     for item in deduped:
         ai = analyse_claude(item)
-        item["ai"] = ai
         item["score"] = compute_score(item, ai)
 
-    deduped.sort(key=lambda x: x["score"], reverse=True)
-
-    if deduped:
-        log.info(f"✅ {len(deduped)} annonce(s) pertinente(s)")
-        for item in deduped:
-            ai = item["ai"]
-            if ai.get("conseil") == "ignorer" and ai.get("confiance", 0) >= 80:
-                log.info(f"IA ignoré : {item['title']}")
-                seen.add(item["id"])
-                continue
-            send_item(item, ai)
+        # L'IA dit que c'est pas un iPhone cassé → on ignore
+        if not ai.get("est_iphone_casse", False) or ai.get("conseil") == "ignorer":
+            log.info(f"IA ignoré : {item['title']}")
             seen.add(item["id"])
-    else:
-        log.info(f"Rien ({len(fresh)} examinée(s))")
+            continue
+
+        send_item(item, ai)
+        seen.add(item["id"])
+        sent += 1
+
+    log.info(f"✅ {sent} annonce(s) envoyée(s)")
 
     for i in fresh:
         seen.add(i["id"])

@@ -321,8 +321,8 @@ def fetch_vinted() -> list:
 
     all_results = []
     for model in ["iphone 11", "iphone 12", "iphone 13", "iphone 14", "iphone 15", "iphone 16"]:
-        params = {"search_text": f"{model} cassé", "order": "newest_first",
-                  "per_page": "50", "price_to": str(PRIX_MAX)}
+        params = {"search_text": model, "order": "newest_first",
+                  "per_page": "100", "price_to": str(PRIX_MAX)}
         try:
             r = session.get(f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
                             headers=headers, timeout=15)

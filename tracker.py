@@ -126,45 +126,79 @@ def pre_filter(item: dict) -> bool:
 
 # ── Analyse IA avec photo ─────────────────────────────────────────────────────
 def analyse_claude(item: dict) -> dict:
-    default = {"est_iphone_casse": False, "confiance": 50, "conseil": "ignorer",
-               "modele": "?", "etat": "?", "urgence": False, "resume": "", "raison": ""}
-    if not ANTHROPIC_API_KEY:
-        return default
+    """Analyse basée sur le texte uniquement — pas d'appel API."""
+    title = item["title"].lower()
+    desc  = item.get("description", "").lower()
+    full  = title + " " + desc
+
+    mots_casse = [
+        "cassé", "cassée", "fissuré", "fissurée", "fissure",
+        "écran cassé", "vitre cassée", "écran fissuré",
+        "hs", "panne", "broken", "pour pièce", "à réparer",
+        "ne s'allume", "batterie hs", "défectueux", "défectueuse",
+        "ne fonctionne", "ne marche", "abîmé", "mort",
+    ]
+
+    mots_ok = ["iphone 11", "iphone 12", "iphone 13", "iphone 14",
+               "iphone 15", "iphone 16", "iphone 17"]
+
+    mots_ignorer = [
+        "neuf", "reconditionné", "reconditionnée", "très bon état",
+        "bon état", "parfait état", "comme neuf", "iphone x",
+        "iphone xr", "iphone xs", "iphone 5", "iphone 6",
+        "iphone 7", "iphone 8", "iphone se", "iphone 4",
+        "bloqué icloud", "icloud", "activation lock",
+        "reconditionné", "grade a", "grade b",
+    ]
+
+    # Modèle détecté
+    modele = "iPhone ?"
+    for m in ["iphone 17", "iphone 16", "iphone 15", "iphone 14",
+              "iphone 13", "iphone 12", "iphone 11"]:
+        if m in full:
+            modele = m.title()
+            break
+
+    # Ignorer si mauvais modèle ou état
+    if any(kw in full for kw in mots_ignorer):
+        return {"est_iphone_casse": False, "conseil": "ignorer", "confiance": 90,
+                "modele": modele, "etat": "non cassé", "urgence": False,
+                "resume": "", "raison": "Non cassé ou mauvais modèle"}
+
+    # Vérifier si cassé
+    est_casse = any(kw in full for kw in mots_casse)
+    if not est_casse:
+        return {"est_iphone_casse": False, "conseil": "ignorer", "confiance": 70,
+                "modele": modele, "etat": "état inconnu", "urgence": False,
+                "resume": "", "raison": "Pas de mention de casse"}
+
+    # Calcul rentabilité
+    valeurs = {"iphone 11": 55, "iphone 12": 80, "iphone 13": 115,
+               "iphone 14": 160, "iphone 15": 195, "iphone 16": 245}
+    valeur = valeurs.get(modele.lower(), 100)
+
     try:
-        prompt = f"""Expert en rachat/réparation iPhone. Analyse cette annonce.
+        price = float(item["price"])
+        pct = round((valeur - price) / valeur * 100)
+        urgence = pct >= 30
+    except ValueError:
+        pct = 0
+        urgence = False
 
-Titre: {item['title']}
-Description: {item.get('description', 'Aucune')}
-Prix: {item['price']} €
+    etat = next((kw for kw in mots_casse if kw in full), "cassé")
 
-RÈGLE ABSOLUE : réponds UNIQUEMENT en JSON valide, sans markdown.
-
-C'est un iPhone cassé si : écran cassé, fissuré, ne s'allume pas, batterie HS, panne, pour pièce, à réparer
-C'est À IGNORER si : neuf, reconditionné, très bon état, bon état, iPhone X/XR/XS/5/6/7/8, coque, accessoire, autre marque, bloqué iCloud
-
-Valeurs marché France iPhones cassés :
-iPhone 11: 40-70€ | 12: 60-100€ | 13: 90-140€ | 14: 130-190€ | 15: 160-230€ | 16: 210-280€
-
-urgence = true si prix ≥30% sous valeur marché
-
-{{"est_iphone_casse": true, "modele": "iPhone 13", "etat": "écran fissuré", "valeur_marche": 110, "pourcentage_sous_marche": 35, "urgence": false, "confiance": 90, "resume": "iPhone 13 écran cassé", "conseil": "acheter", "raison": "Bon prix"}}
-
-conseil = acheter / vérifier / ignorer"""
-
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 300,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=15
-        )
-        r.raise_for_status()
-        text = re.sub(r"```json|```", "", r.json()["content"][0]["text"]).strip()
-        return json.loads(text)
-    except Exception as e:
-        log.error(f"Claude : {e}")
-        return default
+    return {
+        "est_iphone_casse": True,
+        "conseil": "acheter" if pct >= 20 else "vérifier",
+        "confiance": 85,
+        "modele": modele,
+        "etat": etat,
+        "valeur_marche": valeur,
+        "pourcentage_sous_marche": max(pct, 0),
+        "urgence": urgence,
+        "resume": f"{modele} — {etat}",
+        "raison": f"{pct}% sous le marché" if pct > 0 else "Prix correct",
+    }
 
 # ── Score ─────────────────────────────────────────────────────────────────────
 def compute_score(item: dict, ai: dict) -> int:

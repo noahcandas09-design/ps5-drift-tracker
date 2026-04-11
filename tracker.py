@@ -118,8 +118,10 @@ def is_relevant(item: dict) -> bool:
     title = item["title"].lower()
     full  = title + " " + item.get("description", "").lower()
 
-    # Prix
+    # Prix minimum — un iPhone cassé coûte au moins 15€
     try:
+        if float(item["price"]) < 15:
+            return False
         if float(item["price"]) > PRIX_MAX:
             return False
     except ValueError:
@@ -194,9 +196,10 @@ Prix: {item['price']} €
 RÈGLE ABSOLUE : réponds UNIQUEMENT en JSON valide, sans markdown.
 
 CRITÈRES STRICTS — si UN SEUL n'est pas respecté → ignorer avec confiance 99 :
-1. C'est un iPhone Apple PHYSIQUE ET COMPLET
+1. C'est un iPhone Apple PHYSIQUE ET COMPLET (le téléphone entier)
 2. Il est CASSÉ physiquement (écran, vitre, batterie défaillante, ne s'allume pas...)
-3. Ce N'EST PAS : coque, housse, chargeur, câble, boîte, pièce détachée, accessoire, bloqué iCloud
+3. Ce N'EST PAS : coque, housse, chargeur, câble, boîte, pièce détachée, accessoire, verre trempé, film, support, dock, écouteurs
+4. Le prix est cohérent avec un iPhone cassé (minimum ~15-20€)
 
 Valeurs marché France (iPhone cassé, écran fissuré) :
 - iPhone 11 : 40-70€

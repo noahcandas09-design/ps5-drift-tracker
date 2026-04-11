@@ -135,11 +135,7 @@ def is_relevant(item: dict) -> bool:
     if not any(model in title for model in IPHONE_MODELS):
         return False
 
-    # Doit contenir un mot de casse/défaut
-    if not any(kw in full for kw in MOTS_CASSE_OBLIGATOIRE):
-        return False
-
-    # Exclusions strictes dans le titre
+    # Exclusions strictes
     if any(kw in title for kw in MOTS_EXCLUS):
         return False
 

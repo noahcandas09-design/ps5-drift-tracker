@@ -37,34 +37,39 @@ CONDITIONS_BOOST = {
     "ne s'allume": 30, "ne s'allume plus": 30,
 }
 
-# --- FILTRAGE ACCESSOIRES ET MARQUES AMÉLIORÉ ---
-KEYWORDS_EXCLUDE = [
-    # Accessoires (FR, EN, ES, IT, DE)
+# Mots qui DOIVENT apparaître pour qu'une annonce soit acceptée
+# Au moins un de ces mots doit être dans le titre
+KEYWORDS_DEFAUT_OBLIGATOIRE = [
+    "cassé", "cassée", "casse", "fissuré", "fissure",
+    "écran cassé", "vitre cassée", "écran fissuré",
+    "bloqué", "bloquée", "icloud", "activation lock",
+    "hs", "panne", "broken", "pour pièce", "à réparer",
+    "ne s'allume", "batterie hs", "bloqué icloud",
+    "défaut", "défectueux", "défectueuse",
+    "problème", "pb écran", "tactile",
+]
+    # Accessoires
     "coque", "housse", "étui", "protection", "verre trempé", "film",
-    "case", "cover", "shell", "skin", "protector", "screen protector",
-    "funda", "carcasa", "custodia", "hülle", "tasche", "schale",
     "chargeur", "câble", "cable", "adaptateur", "lightning", "usb",
     "airpods", "écouteurs", "casque", "oreillette",
-    "sticker", "autocollant", "wrap", "support", "dock", "stand", "holder", "bras",
-    "batterie externe", "powerbank", "chargeur sans fil", "magsafe", "mag safe",
-    
+    "sticker", "skin", "autocollant", "wrap",
+    "support", "dock", "stand", "holder", "bras",
+    "batterie externe", "powerbank", "chargeur sans fil",
+    "magsafe", "mag safe",
     # Boites et emballages
-    "boite", "boîte", "box", "emballage", "packaging", "manuel", "notice", "documentation",
-    
-    # Marques d'accessoires (Si c'est cette marque, ce n'est pas un iPhone)
-    "rhinoshield", "rhino shield", "spigen", "otterbox", "belkin", 
-    "ideal of sweden", "burga", "casetify", "esr", "jetech", "anker",
-
+    "boite", "boîte", "box", "emballage", "packaging",
+    "manuel", "notice", "documentation",
     # Autres appareils
     "ipad", "macbook", "imac", "apple watch", "watch",
     "samsung", "xiaomi", "huawei", "oppo", "oneplus",
     "android", "pixel", "sony xperia",
-    
-    # Pièces détachées et lots
+    # Pièces détachées
     "écran seul", "vitre seule", "chassis", "châssis",
     "nappe", "connecteur", "pièce détachée", "pièces détachées",
     "face avant", "face arrière", "vitre arrière",
+    # Accessoires gaming/photo
     "manette", "objectif", "lentille",
+    # Lots
     "lot de", "lot d'", "pack accessoires", "lot accessoires",
 ]
 
@@ -119,41 +124,39 @@ def parse_price(raw) -> str:
 # ── Filtrage ──────────────────────────────────────────────────────────────────
 def is_relevant(item: dict) -> bool:
     title = item["title"].lower()
+    full  = title + " " + item.get("description", "").lower()
 
     try:
-        price_float = float(item["price"])
-        if price_float > PRIX_MAX:
-            return False
-        # Ajout sécurité : Un iPhone à moins de 8€ est quasiment toujours une coque ou un câble
-        if price_float < 8:
+        if float(item["price"]) > PRIX_MAX:
             return False
     except ValueError:
         pass
 
-    # Doit contenir "iphone" + un modèle valide
+    # Doit contenir "iphone"
     if "iphone" not in title:
         return False
+
+    # Doit contenir un modèle valide
     if not any(model in title for model in IPHONE_MODELS):
         return False
 
-    # Exclusions strictes (mots-clés et marques)
+    # Doit contenir au moins un mot de défaut/casse
+    if not any(kw in full for kw in KEYWORDS_DEFAUT_OBLIGATOIRE):
+        return False
+
+    # Exclusions strictes
     if any(kw in title for kw in KEYWORDS_EXCLUDE):
         return False
 
-    # Exclusions supplémentaires par patterns (Regex amélioré)
+    # Exclusions par patterns regex
     patterns_exclus = [
-        r"^coque", r"^housse", r"^étui", r"^verre",
-        r"^chargeur", r"^câble", r"^cable", r"^batterie",
-        r"^boite", r"^boîte", r"^box", r"^écran\s",
-        r"^vitre", r"^lot\s", r"^pack\s", r"^airpod",
-        r"pour\s+iphone",  # Ex: "coque pour iphone 13"
-        r"for\s+iphone",   # Ex: "case for iphone"
-        r"para\s+iphone",  # Espagnol
-        r"per\s+iphone",   # Italien
-        r"iphone.{0,10}coque", r"iphone.{0,10}housse",
-        r"iphone.{0,10}étui", r"iphone.{0,10}verre",
-        r"iphone.{0,10}chargeur", r"iphone.{0,10}câble",
-        r"(coque|housse|etui|étui|case|funda|custodia|hülle|protection|verre|vitre|film)\s+.*iphone"
+        r"pour iphone", r"iphone.{0,15}coque",
+        r"iphone.{0,15}housse", r"iphone.{0,15}étui",
+        r"iphone.{0,15}verre", r"iphone.{0,15}chargeur",
+        r"iphone.{0,15}câble", r"^coque", r"^housse",
+        r"^verre", r"^chargeur", r"^câble", r"^batterie",
+        r"^boite", r"^boîte", r"^écran\s", r"^vitre",
+        r"^lot\s", r"^pack\s", r"^airpod",
     ]
     for pat in patterns_exclus:
         if re.search(pat, title):
@@ -196,16 +199,17 @@ Titre: {item['title']}
 Description: {item.get('description', 'Aucune')}
 Prix: {item['price']} €
 
-CRITIQUE : Est-ce un VRAI TÉLÉPHONE iPhone Apple physique ou un ACCESSOIRE (coque, boîte, câble, chargeur) ?
-Si ce n'est PAS un téléphone iPhone physique complet (ex: coque, boite, chargeur, câble, écouteurs, pièce détachée, accessoire, autre marque) → conseil = ignorer, confiance = 99
-
 Questions clés :
-- Est-ce un vrai iPhone Apple ?
+- Est-ce un vrai iPhone Apple (pas Samsung, pas accessoire) ?
 - Quel modèle exact ? (ex: iPhone 13 Pro Max)
 - Est-il bloqué iCloud ?
 - Quel est l'état ? (écran cassé, batterie faible, bloqué, etc.)
-- Compare le prix demandé avec la valeur marché réelle de ce modèle dans cet état en France en 2026.
+- Compare le prix demandé avec la valeur marché réelle de ce modèle dans cet état en France en 2025
 - Est-ce une urgence absolue (prix très en dessous du marché) ?
+
+Si ce n'est PAS un téléphone iPhone physique complet (ex: coque, boite, chargeur, câble, écouteurs, pièce détachée, accessoire, autre marque) → conseil = ignorer, confiance = 99
+
+Je veux UNIQUEMENT des iPhones complets physiques, même cassés, même bloqués iCloud. Rien d'autre.
 
 Valeurs marché approximatives en France (état cassé/bloqué) :
 - iPhone 11 cassé : 30-60€ | bloqué iCloud : 20-40€
@@ -224,7 +228,7 @@ conseil = acheter / vérifier / ignorer"""
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-3-haiku-20240307", "max_tokens": 400,
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 400,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=15
         )

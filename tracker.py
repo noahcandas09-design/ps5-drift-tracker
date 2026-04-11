@@ -1,6 +1,7 @@
 """
 Tracker Vinted + Leboncoin → Telegram + Discord
-iPhones 11 à 17 Pro Max cassés/bloqués iCloud ≤ 150€
+iPhones 11 à 17 CASSÉS uniquement ≤ 150€
+Pas de coques, pas d'accessoires, pas de bloqués iCloud
 """
 
 import os, json, logging, requests, hashlib, re
@@ -22,56 +23,47 @@ SEEN_FILE  = Path("seen_ids.json")
 STATS_FILE = Path("stats.json")
 PRIX_MAX   = 150
 
-# Modèles recherchés
 IPHONE_MODELS = [
-    "iphone 11", "iphone 12", "iphone 13", "iphone 14", "iphone 15",
-    "iphone 16", "iphone 17",
+    "iphone 11", "iphone 12", "iphone 13",
+    "iphone 14", "iphone 15", "iphone 16", "iphone 17",
 ]
 
-# Conditions préférées (booste le score)
-CONDITIONS_BOOST = {
-    "icloud": 40, "bloqué": 30, "locked": 30, "activation lock": 35,
-    "écran cassé": 25, "vitre cassée": 25, "écran fissuré": 25,
-    "batterie": 15, "hs": 20, "panne": 20, "cassé": 20,
-    "broken": 20, "pour pièce": 25, "à réparer": 25,
-    "ne s'allume": 30, "ne s'allume plus": 30,
-}
-
-# Mots qui DOIVENT apparaître pour qu'une annonce soit acceptée
-# Au moins un de ces mots doit être dans le titre
-KEYWORDS_DEFAUT_OBLIGATOIRE = [
-    "cassé", "cassée", "casse", "fissuré", "fissure",
-    "écran cassé", "vitre cassée", "écran fissuré",
-    "bloqué", "bloquée", "icloud", "activation lock",
+# Au moins un de ces mots DOIT être présent (dommage physique)
+MOTS_CASSE_OBLIGATOIRE = [
+    "cassé", "cassée", "casse", "fissuré", "fissurée", "fissure",
+    "écran cassé", "vitre cassée", "écran fissuré", "vitre fissurée",
     "hs", "panne", "broken", "pour pièce", "à réparer",
-    "ne s'allume", "batterie hs", "bloqué icloud",
-    "défaut", "défectueux", "défectueuse",
-    "problème", "pb écran", "tactile",
+    "ne s'allume", "batterie hs", "défaut", "défectueux", "défectueuse",
+    "problème", "tactile", "mort", "ne fonctionne", "ne marche",
+    "abîmé", "abimé", "rayé", "rayure",
 ]
-    # Accessoires
-    "coque", "housse", "étui", "protection", "verre trempé", "film",
-    "chargeur", "câble", "cable", "adaptateur", "lightning", "usb",
+
+# Ces mots = exclusion immédiate
+MOTS_EXCLUS = [
+    "coque", "housse", "étui", "protection", "verre trempé", "film protecteur",
+    "chargeur", "câble", "cable", "adaptateur", "lightning", "usb-c",
     "airpods", "écouteurs", "casque", "oreillette",
-    "sticker", "skin", "autocollant", "wrap",
-    "support", "dock", "stand", "holder", "bras",
-    "batterie externe", "powerbank", "chargeur sans fil",
+    "sticker", "skin", "autocollant",
+    "support", "dock", "stand", "holder",
+    "batterie externe", "powerbank",
     "magsafe", "mag safe",
-    # Boites et emballages
-    "boite", "boîte", "box", "emballage", "packaging",
-    "manuel", "notice", "documentation",
-    # Autres appareils
-    "ipad", "macbook", "imac", "apple watch", "watch",
-    "samsung", "xiaomi", "huawei", "oppo", "oneplus",
-    "android", "pixel", "sony xperia",
-    # Pièces détachées
-    "écran seul", "vitre seule", "chassis", "châssis",
-    "nappe", "connecteur", "pièce détachée", "pièces détachées",
-    "face avant", "face arrière", "vitre arrière",
-    # Accessoires gaming/photo
-    "manette", "objectif", "lentille",
-    # Lots
-    "lot de", "lot d'", "pack accessoires", "lot accessoires",
+    "boite", "boîte", "box", "emballage",
+    "ipad", "macbook", "apple watch", "watch",
+    "samsung", "xiaomi", "huawei", "oppo", "oneplus", "android",
+    "écran seul", "vitre seule", "chassis", "nappe", "connecteur",
+    "pièce détachée", "face avant", "face arrière",
+    "lot de", "lot d'", "pack accessoires",
+    # Bloqué iCloud exclus
+    "icloud", "bloqué icloud", "activation lock", "bloqué activation",
 ]
+
+# Boost de score selon l'état
+CONDITIONS_BOOST = {
+    "écran cassé": 25, "vitre cassée": 25, "fissuré": 20,
+    "batterie": 15, "hs": 20, "panne": 20, "cassé": 15,
+    "broken": 20, "pour pièce": 25, "à réparer": 25,
+    "ne s'allume": 30, "défectueux": 15,
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -121,11 +113,12 @@ def parse_price(raw) -> str:
         return str(raw.get("amount", "?"))
     return str(raw) if raw is not None else "?"
 
-# ── Filtrage ──────────────────────────────────────────────────────────────────
+# ── Filtrage strict ───────────────────────────────────────────────────────────
 def is_relevant(item: dict) -> bool:
     title = item["title"].lower()
     full  = title + " " + item.get("description", "").lower()
 
+    # Prix
     try:
         if float(item["price"]) > PRIX_MAX:
             return False
@@ -140,23 +133,24 @@ def is_relevant(item: dict) -> bool:
     if not any(model in title for model in IPHONE_MODELS):
         return False
 
-    # Doit contenir au moins un mot de défaut/casse
-    if not any(kw in full for kw in KEYWORDS_DEFAUT_OBLIGATOIRE):
+    # Doit contenir un mot de casse/défaut
+    if not any(kw in full for kw in MOTS_CASSE_OBLIGATOIRE):
         return False
 
-    # Exclusions strictes
-    if any(kw in title for kw in KEYWORDS_EXCLUDE):
+    # Exclusions strictes dans le titre
+    if any(kw in title for kw in MOTS_EXCLUS):
         return False
 
-    # Exclusions par patterns regex
+    # Exclusions par regex
     patterns_exclus = [
-        r"pour iphone", r"iphone.{0,15}coque",
-        r"iphone.{0,15}housse", r"iphone.{0,15}étui",
-        r"iphone.{0,15}verre", r"iphone.{0,15}chargeur",
-        r"iphone.{0,15}câble", r"^coque", r"^housse",
-        r"^verre", r"^chargeur", r"^câble", r"^batterie",
-        r"^boite", r"^boîte", r"^écran\s", r"^vitre",
-        r"^lot\s", r"^pack\s", r"^airpod",
+        r"pour iphone", r"iphone.{0,20}coque",
+        r"iphone.{0,20}housse", r"iphone.{0,20}étui",
+        r"iphone.{0,20}verre", r"iphone.{0,20}chargeur",
+        r"iphone.{0,20}câble", r"iphone.{0,20}cable",
+        r"^coque", r"^housse", r"^verre", r"^chargeur",
+        r"^câble", r"^cable", r"^batterie", r"^boite",
+        r"^boîte", r"^écran\s", r"^vitre", r"^lot\s",
+        r"^pack\s", r"^airpod", r"^étui",
     ]
     for pat in patterns_exclus:
         if re.search(pat, title):
@@ -167,13 +161,11 @@ def is_relevant(item: dict) -> bool:
 # ── Score ─────────────────────────────────────────────────────────────────────
 def compute_score(item: dict, ai: dict) -> int:
     score = 0
-    title = item["title"].lower()
-    desc  = item.get("description", "").lower()
-    full  = title + " " + desc
+    full = item["title"].lower() + " " + item.get("description", "").lower()
 
     try:
         price = float(item["price"])
-        if price <= 20:   score += 70
+        if price <= 20:    score += 70
         elif price <= 50:  score += 50
         elif price <= 80:  score += 30
         elif price <= 100: score += 20
@@ -191,38 +183,34 @@ def compute_score(item: dict, ai: dict) -> int:
 # ── Analyse Claude AI ─────────────────────────────────────────────────────────
 def analyse_claude(item: dict) -> dict:
     if not ANTHROPIC_API_KEY:
-        return {"confiance": 50, "resume": "", "conseil": "vérifier", "modele": "inconnu", "etat": "inconnu"}
+        return {"confiance": 50, "resume": "", "conseil": "vérifier", "modele": "inconnu", "etat": "inconnu", "urgence": False}
     try:
-        prompt = f"""Analyse cette annonce d'iPhone et réponds UNIQUEMENT en JSON valide, sans markdown.
+        prompt = f"""Tu es expert en reconditionnement iPhone. Analyse cette annonce.
 
 Titre: {item['title']}
 Description: {item.get('description', 'Aucune')}
 Prix: {item['price']} €
 
-Questions clés :
-- Est-ce un vrai iPhone Apple (pas Samsung, pas accessoire) ?
-- Quel modèle exact ? (ex: iPhone 13 Pro Max)
-- Est-il bloqué iCloud ?
-- Quel est l'état ? (écran cassé, batterie faible, bloqué, etc.)
-- Compare le prix demandé avec la valeur marché réelle de ce modèle dans cet état en France en 2025
-- Est-ce une urgence absolue (prix très en dessous du marché) ?
+RÈGLE ABSOLUE : réponds UNIQUEMENT en JSON valide, sans markdown.
 
-Si ce n'est PAS un téléphone iPhone physique complet (ex: coque, boite, chargeur, câble, écouteurs, pièce détachée, accessoire, autre marque) → conseil = ignorer, confiance = 99
+CRITÈRES STRICTS — si UN SEUL n'est pas respecté → ignorer avec confiance 99 :
+1. C'est un iPhone Apple PHYSIQUE ET COMPLET
+2. Il est CASSÉ physiquement (écran, vitre, batterie défaillante, ne s'allume pas...)
+3. Ce N'EST PAS : coque, housse, chargeur, câble, boîte, pièce détachée, accessoire, bloqué iCloud
 
-Je veux UNIQUEMENT des iPhones complets physiques, même cassés, même bloqués iCloud. Rien d'autre.
+Valeurs marché France (iPhone cassé, écran fissuré) :
+- iPhone 11 : 40-70€
+- iPhone 12 : 60-100€  
+- iPhone 13 : 90-140€
+- iPhone 14 : 130-190€
+- iPhone 15 : 160-230€
+- iPhone 16 : 210-280€
 
-Valeurs marché approximatives en France (état cassé/bloqué) :
-- iPhone 11 cassé : 30-60€ | bloqué iCloud : 20-40€
-- iPhone 12 cassé : 50-90€ | bloqué iCloud : 30-60€
-- iPhone 13 cassé : 80-130€ | bloqué iCloud : 50-90€
-- iPhone 14 cassé : 120-180€ | bloqué iCloud : 80-130€
-- iPhone 15 cassé : 150-220€ | bloqué iCloud : 100-160€
-- iPhone 16 cassé : 200-280€ | bloqué iCloud : 140-200€
+urgence = true si prix 30%+ sous valeur marché estimée
 
-Format JSON attendu:
-{{"est_iphone_apple": true, "modele": "iPhone 13 Pro", "bloque_icloud": true, "etat": "écran cassé + iCloud", "valeur_marche": 90, "pourcentage_sous_marche": 45, "urgence": true, "confiance": 90, "resume": "iPhone 13 Pro bloqué iCloud avec écran cassé", "conseil": "acheter", "raison": "45% sous le prix du marché, très rentable"}}
+Format JSON :
+{{"est_iphone_casse": true, "modele": "iPhone 13", "etat": "écran cassé", "valeur_marche": 110, "pourcentage_sous_marche": 40, "urgence": true, "confiance": 92, "resume": "iPhone 13 écran fissuré", "conseil": "acheter", "raison": "40% sous le marché"}}
 
-urgence = true uniquement si le prix est 30%+ en dessous de la valeur marché
 conseil = acheter / vérifier / ignorer"""
 
         r = requests.post(
@@ -238,7 +226,7 @@ conseil = acheter / vérifier / ignorer"""
         return json.loads(text)
     except Exception as e:
         log.error(f"Claude API : {e}")
-        return {"confiance": 50, "resume": "", "conseil": "vérifier", "modele": "inconnu", "etat": "inconnu"}
+        return {"confiance": 50, "resume": "", "conseil": "vérifier", "modele": "inconnu", "etat": "inconnu", "urgence": False}
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 def send_telegram_text(msg: str, retries=3):
@@ -249,7 +237,7 @@ def send_telegram_text(msg: str, retries=3):
                                      "parse_mode": "HTML", "disable_web_page_preview": False}, timeout=10).raise_for_status()
             return
         except Exception as e:
-            log.error(f"Telegram text ({i+1}) : {e}")
+            log.error(f"Telegram ({i+1}) : {e}")
 
 def send_telegram_photo(photo_url: str, caption: str, retries=3):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -283,9 +271,8 @@ def send_item(item: dict, ai: dict):
     urgent = ai.get("urgence", False)
 
     conseil_emoji = {"acheter": "🟢", "ignorer": "🔴", "vérifier": "🟡"}.get(ai.get("conseil", ""), "🤖")
-    icloud_str = "\n🔒 <b>Bloqué iCloud</b>" if ai.get("bloque_icloud") else ""
+    modele_str = f"\n📱 <b>{ai.get('modele', '?')}</b>" if ai.get("modele") else ""
     etat_str   = f"\n🔧 État : <i>{ai.get('etat', '?')}</i>" if ai.get("etat") else ""
-    modele_str = f"\n📱 Modèle : <b>{ai.get('modele', '?')}</b>" if ai.get("modele") else ""
 
     marche_str = ""
     if ai.get("valeur_marche") and ai.get("pourcentage_sous_marche"):
@@ -294,7 +281,7 @@ def send_item(item: dict, ai: dict):
 
     ai_str = ""
     if ai.get("resume"):
-        ai_str = (f"\n🤖 <b>IA :</b> {ai.get('resume', '')}"
+        ai_str = (f"\n🤖 {ai.get('resume', '')}"
                   f"\n{conseil_emoji} <b>{ai.get('conseil', '?')}</b> — {ai.get('raison', '')}"
                   f"\n🎯 Confiance : {ai.get('confiance', '?')}%")
 
@@ -305,7 +292,7 @@ def send_item(item: dict, ai: dict):
     else:             header = "📌 Annonce"
 
     caption = (f"{header}\n{item['source']} — <b>{item['title']}</b>\n"
-               f"💶 {item['price']} €{modele_str}{icloud_str}{etat_str}{marche_str}{ai_str}\n"
+               f"💶 {item['price']} €{modele_str}{etat_str}{marche_str}{ai_str}\n"
                f"📊 Score : {score}/100\n"
                f"🔗 <a href=\"{item['url']}\">Voir l'annonce</a>")
 
@@ -334,7 +321,7 @@ def fetch_vinted() -> list:
 
     all_results = []
     for model in ["iphone 11", "iphone 12", "iphone 13", "iphone 14", "iphone 15", "iphone 16"]:
-        params = {"search_text": model, "order": "newest_first",
+        params = {"search_text": f"{model} cassé", "order": "newest_first",
                   "per_page": "50", "price_to": str(PRIX_MAX)}
         try:
             r = session.get(f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
@@ -356,15 +343,16 @@ def fetch_vinted() -> list:
                     "title_hash":  title_hash(i.get("title", "")),
                 })
         except Exception as e:
-            log.error(f"Erreur fetch Vinted ({model}) : {e}")
+            log.error(f"Vinted ({model}) : {e}")
 
     return all_results
 
-# ── Scraping Leboncoin (RSS) ──────────────────────────────────────────────────
+# ── Scraping Leboncoin ────────────────────────────────────────────────────────
 def fetch_leboncoin() -> list:
     import xml.etree.ElementTree as ET
     results = []
-    for model in ["iphone+11", "iphone+12", "iphone+13", "iphone+14", "iphone+15", "iphone+16"]:
+    for model in ["iphone+11+cassé", "iphone+12+cassé", "iphone+13+cassé",
+                  "iphone+14+cassé", "iphone+15+cassé", "iphone+16+cassé"]:
         rss_url = f"https://www.leboncoin.fr/rss?text={model}&price_max={PRIX_MAX}&regions=12&shippable=1"
         try:
             r = requests.get(rss_url, headers={"User-Agent": "RSSReader/1.0"}, timeout=15)
@@ -393,21 +381,19 @@ def fetch_leboncoin() -> list:
                     "title_hash":  title_hash(title),
                 })
         except Exception as e:
-            log.error(f"Erreur fetch Leboncoin ({model}) : {e}")
+            log.error(f"Leboncoin ({model}) : {e}")
     return results
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    log.info("🚀 Tracker iPhone démarré — 11 à 17 Pro Max ≤ 150€")
+    log.info("🚀 Tracker iPhone Cassé démarré")
     seen        = load_seen()
     seen_hashes = set()
 
     all_items = fetch_vinted() + fetch_leboncoin()
     fresh = [i for i in all_items if i["id"] not in seen]
-
     relevant = [i for i in fresh if is_relevant(i)]
 
-    # Déduplication
     deduped = []
     for item in relevant:
         h = item["title_hash"]
@@ -415,7 +401,6 @@ def main():
             seen_hashes.add(h)
             deduped.append(item)
 
-    # Analyse IA + score + tri
     for item in deduped:
         ai = analyse_claude(item)
         item["ai"] = ai
@@ -434,7 +419,7 @@ def main():
             send_item(item, ai)
             seen.add(item["id"])
     else:
-        log.info(f"Rien de pertinent ({len(fresh)} annonce(s) examinée(s))")
+        log.info(f"Rien ({len(fresh)} examinée(s))")
 
     for i in fresh:
         seen.add(i["id"])

@@ -1,12 +1,13 @@
 """
+APEX — Arbitrage & Profit EXpert
 Tracker iPhone Cassé — Version Maximale
-Stratégie : filet large + analyse fine pour maximiser les bonnes affaires
 """
 
-import os, json, logging, requests, hashlib, re
+import os, json, logging, requests, hashlib, re, time
 from pathlib import Path
 from urllib.parse import urlencode
 from dotenv import load_dotenv
+from datetime import datetime, timezone
 
 load_dotenv()
 
@@ -17,90 +18,129 @@ GIST_TOKEN          = os.getenv("GIST_TOKEN")
 GIST_ID             = os.getenv("GIST_ID")
 
 SEEN_FILE = Path("seen_ids.json")
-PRIX_MAX  = 150
-PRIX_MIN  = 10
 
-# Valeurs marché France — iPhones cassés (écran fissuré, état moyen)
-VALEURS_MARCHE = {
-    "iphone 11":          50,  "iphone 11 pro":      70,  "iphone 11 pro max":  85,
-    "iphone 12":          75,  "iphone 12 mini":     60,  "iphone 12 pro":      95,  "iphone 12 pro max":  115,
-    "iphone 13":         110,  "iphone 13 mini":     90,  "iphone 13 pro":     140,  "iphone 13 pro max":  165,
-    "iphone 14":         155,  "iphone 14 plus":    170,  "iphone 14 pro":     200,  "iphone 14 pro max":  230,
-    "iphone 15":         190,  "iphone 15 plus":    210,  "iphone 15 pro":     250,  "iphone 15 pro max":  290,
-    "iphone 16":         240,  "iphone 16 plus":    260,  "iphone 16 pro":     310,  "iphone 16 pro max":  360,
-    "iphone 17":         280,  "iphone 17 plus":    300,  "iphone 17 pro":     360,  "iphone 17 pro max":  420,
+# ── Prix de revente Back Market grade B ───────────────────────────────────────
+PRIX_REVENTE = {
+    "iphone 11":          130, "iphone 11 pro":      160, "iphone 11 pro max":  180,
+    "iphone 12":          180, "iphone 12 mini":     150, "iphone 12 pro":      220, "iphone 12 pro max":  260,
+    "iphone 13":          280, "iphone 13 mini":     230, "iphone 13 pro":      340, "iphone 13 pro max":  380,
+    "iphone 14":          380, "iphone 14 plus":     400, "iphone 14 pro":      460, "iphone 14 pro max":  510,
+    "iphone 15":          480, "iphone 15 plus":     520, "iphone 15 pro":      580, "iphone 15 pro max":  650,
+    "iphone 16":          580, "iphone 16 plus":     620, "iphone 16 pro":      700, "iphone 16 pro max":  780,
+    "iphone 17":          650, "iphone 17 plus":     700, "iphone 17 pro":      800, "iphone 17 pro max":  900,
 }
 
-# Bonus selon capacité stockage
-BONUS_STOCKAGE = {"512": 30, "256": 15, "128": 5, "64": 0}
+# ── Coûts de réparation estimés ───────────────────────────────────────────────
+COUTS_REPARATION = {
+    "écran":      60, "vitre":       50, "fissuré":    50, "fissure":     50,
+    "batterie":   40, "caméra":      55, "bouton":     35, "micro":       30,
+    "haut-parleur": 30, "speaker":   30, "ne s'allume": 85, "water":     100,
+    "broken":     60, "cracked":     50, "battery":    40, "camera":      55,
+    "rotto":      60, "kaputt":      60, "kapot":      60,
+}
+COUT_DEFAULT = 60  # coût par défaut si panne non identifiée
 
-# Recherches Vinted — filet large
-SEARCH_QUERIES_VINTED = [
-    # Recherches directes cassé
-    "iphone cassé", "iphone fissuré", "iphone écran cassé",
-    "iphone pour pièce", "iphone hs", "iphone panne",
-    "iphone à réparer", "iphone ne s allume pas",
-    # Recherches par modèle à prix bas (sans préciser l'état)
-    "iphone 11", "iphone 12", "iphone 13",
-    "iphone 14", "iphone 15", "iphone 16",
-    # Recherches en anglais
-    "iphone broken", "iphone cracked", "iphone damaged",
-    "iphone for parts", "iphone faulty",
+# ── Liste noire ABSOLUE ───────────────────────────────────────────────────────
+BLACKLIST = [
+    # Coques & étuis (toutes langues)
+    "coque", "étui", "housse", "bumper", "protection", "protecteur",
+    "case", "cover", "shell", "sleeve", "pouch", "wallet case", "flip case",
+    "folio case", "hard case", "soft case", "silicone case", "tpu case",
+    "leather case", "phone case", "mobile case", "shockproof",
+    "funda", "carcasa", "estuche", "protector",
+    "custodia", "astuccio",
+    "hülle", "schutzhülle", "handyhülle",
+    "capa", "capinha", "estojo",
+    "hoesje", "hoes", "beschermhoes",
+    "etui", "obudowa", "pokrowiec",
+    "kılıf", "koruyucu",
+    "чехол", "кейс", "накладка",
+    # Chargeurs & câbles
+    "chargeur", "câble", "cable", "adaptateur", "bloc chargeur",
+    "magsafe", "lightning cable", "charger", "charging cable",
+    "power adapter", "wall charger", "wireless charger",
+    "ladekabel", "ladegerät", "cargador",
+    # Écouteurs
+    "écouteurs", "oreillettes", "airpods", "casque",
+    "earphones", "earbuds", "headphones", "kopfhörer",
+    "auriculares", "cuffie",
+    # Protection écran
+    "verre trempé", "film protecteur", "protection écran",
+    "screen protector", "tempered glass", "panzerglas", "schutzfolie",
+    "protector de pantalla", "vetro temperato",
+    # Accessoires divers
+    "support", "dock", "powerbank", "batterie externe",
+    "pop socket", "grip", "tour de cou", "selfie stick",
+    "stand", "mount", "holder", "tripod", "perche",
+    # Pièces détachées
+    "écran seul", "dalle lcd", "vitre seule", "batterie seule",
+    "nappe", "connecteur", "flex", "pièce détachée",
+    "screen only", "lcd only", "battery only", "spare part",
+    "parts only", "schermo solo", "bildschirm einzeln",
+    # Verrous irrécupérables
+    "icloud", "activation lock", "mdm lock", "dep lock",
+    "verrouillé icloud", "locked to owner", "find my iphone",
+    "fmi on", "imei blacklist", "imei bloqué", "volé",
+    "signalé volé", "compte icloud inconnu",
+    # Fausses annonces
+    "recherche", "wanted", "cherche", "iso", "wtb",
+    "want to buy", "je cherche", "looking for", "busco", "cerco",
+    # Autres marques
+    "samsung", "huawei", "xiaomi", "oppo", "oneplus", "pixel",
+    "sony", "nokia", "motorola", "realme", "vivo", "honor",
+    "ipad", "macbook", "apple watch",
 ]
 
-# Mots exclus du TITRE uniquement
-MOTS_EXCLUS_TITRE = [
-    "coque", "housse", "étui", "verre trempé", "film",
-    "chargeur", "câble", "cable", "airpods", "écouteurs",
-    "boite", "boîte", "box", "support", "dock",
-    "ipad", "macbook", "samsung", "huawei", "xiaomi",
-    "pièce détachée", "écran seul", "vitre seule",
-    "icloud", "activation lock",
-    "iphone x ", "iphone xr", "iphone xs", "iphone se",
-    "iphone 5", "iphone 6", "iphone 7", "iphone 8",
-]
-
-# Mots de casse — toutes langues
-MOTS_CASSE = [
+# ── Pannes identifiables ──────────────────────────────────────────────────────
+PANNES = [
     # FR
-    "cassé", "cassée", "fissuré", "fissurée", "hs", "hors service",
-    "panne", "pour pièce", "à réparer", "ne s'allume", "ne démarre",
-    "batterie hs", "batterie morte", "défectueux", "défectueuse",
-    "ne fonctionne", "ne marche", "abîmé", "abimé", "écran noir",
-    "tactile hs", "mort", "morte", "très rayé", "défaut",
+    "écran cassé", "écran fissuré", "vitre cassée", "vitre fissurée",
+    "fissure", "fissuré", "cassé", "cassée",
+    "batterie hs", "batterie morte", "batterie défectueuse",
+    "ne s'allume pas", "ne s'allume plus", "ne démarre pas", "écran noir",
+    "caméra cassée", "caméra hs", "bouton hs", "micro hs",
+    "haut-parleur hs", "tactile hs", "face id hs",
+    "défectueux", "défectueuse", "panne identifiée",
+    "dégât des eaux", "tombé dans l'eau",
     # EN
-    "broken", "cracked", "damaged", "faulty", "for parts",
-    "not working", "dead", "won't turn on", "smashed", "shattered",
-    "water damage", "bad battery", "screen damage", "spares",
+    "cracked screen", "broken screen", "cracked", "broken",
+    "bad battery", "battery issue", "dead battery",
+    "won't turn on", "doesn't turn on", "black screen",
+    "damaged", "faulty", "water damage", "dropped",
+    "camera broken", "camera issue", "speaker broken",
     # ES
-    "roto", "rota", "pantalla rota", "averiado", "para piezas",
-    "no funciona", "no enciende", "dañado",
+    "pantalla rota", "pantalla rajada", "batería mala",
+    "no enciende", "dañado", "caído al agua",
     # IT
-    "rotto", "rotta", "schermo rotto", "danneggiato", "per ricambi",
-    "non funziona", "non si accende",
+    "schermo rotto", "vetro rotto", "schermo incrinato",
+    "batteria scarica", "non si accende", "caduto in acqua",
     # DE
-    "kaputt", "defekt", "gebrochen", "display kaputt",
-    "funktioniert nicht", "für ersatzteile",
+    "display kaputt", "bildschirm kaputt", "akku kaputt",
+    "geht nicht an", "ins wasser gefallen",
     # NL
-    "kapot", "gebroken", "defect", "werkt niet",
+    "scherm kapot", "gebroken scherm", "batterij kapot",
 ]
 
-# Mots de bon état — toutes langues
-MOTS_BON_ETAT = [
-    # FR
+# ── Mots bon état → seulement si pas de panne ─────────────────────────────────
+BON_ETAT = [
     "neuf", "comme neuf", "parfait état", "très bon état", "bon état",
     "excellent état", "reconditionné", "grade a", "grade b",
-    "jamais utilisé", "sous blister",
-    # EN
-    "brand new", "mint", "perfect condition", "good condition",
-    "excellent condition", "like new", "refurbished", "fully working",
-    "works perfectly", "no issues", "no cracks",
-    # ES
-    "nuevo", "como nuevo", "buen estado", "reacondicionado",
-    # IT
-    "nuovo", "come nuovo", "ottimo stato", "ricondizionato",
-    # DE
-    "neu", "wie neu", "guter zustand", "einwandfrei",
+    "jamais utilisé", "fonctionnel", "fonctionne parfaitement",
+    "brand new", "mint", "like new", "refurbished", "fully working",
+    "works perfectly", "no issues", "perfect condition", "good condition",
+    "nuevo", "como nuevo", "buen estado", "funciona perfectamente",
+    "nuovo", "ottimo stato", "funziona perfettamente",
+    "wie neu", "einwandfrei", "voll funktionsfähig",
+]
+
+# ── Recherches Vinted ─────────────────────────────────────────────────────────
+SEARCH_QUERIES = [
+    "iphone cassé", "iphone fissuré", "iphone écran cassé",
+    "iphone pour pièce", "iphone hs", "iphone panne",
+    "iphone ne s allume pas", "iphone batterie hs",
+    "iphone broken", "iphone cracked", "iphone damaged",
+    "iphone 11", "iphone 12", "iphone 13",
+    "iphone 14", "iphone 15", "iphone 16",
 ]
 
 logging.basicConfig(
@@ -114,9 +154,8 @@ log = logging.getLogger(__name__)
 def load_seen() -> set:
     if GIST_TOKEN and GIST_ID:
         try:
-            r = requests.get(
-                f"https://api.github.com/gists/{GIST_ID}",
-                headers={"Authorization": f"token {GIST_TOKEN}"}, timeout=10)
+            r = requests.get(f"https://api.github.com/gists/{GIST_ID}",
+                             headers={"Authorization": f"token {GIST_TOKEN}"}, timeout=10)
             r.raise_for_status()
             return set(json.loads(r.json()["files"]["seen_ids.json"]["content"]))
         except Exception as e:
@@ -126,15 +165,13 @@ def load_seen() -> set:
     return set()
 
 def save_seen(seen: set):
-    # Garde seulement les 3000 derniers IDs pour éviter la saturation
     ids = list(seen)[-3000:]
     if GIST_TOKEN and GIST_ID:
         try:
-            requests.patch(
-                f"https://api.github.com/gists/{GIST_ID}",
-                headers={"Authorization": f"token {GIST_TOKEN}"},
-                json={"files": {"seen_ids.json": {"content": json.dumps(ids)}}},
-                timeout=10).raise_for_status()
+            requests.patch(f"https://api.github.com/gists/{GIST_ID}",
+                           headers={"Authorization": f"token {GIST_TOKEN}"},
+                           json={"files": {"seen_ids.json": {"content": json.dumps(ids)}}},
+                           timeout=10).raise_for_status()
             return
         except Exception as e:
             log.error(f"Gist save : {e}")
@@ -149,121 +186,134 @@ def parse_price(raw) -> str:
     return str(raw) if raw is not None else "?"
 
 # ── Détection modèle ──────────────────────────────────────────────────────────
-def detect_modele(text: str) -> str | None:
-    for m in sorted(VALEURS_MARCHE.keys(), key=len, reverse=True):
-        if m in text:
+def detect_modele(text: str):
+    for m in sorted(PRIX_REVENTE.keys(), key=len, reverse=True):
+        if m in text.lower():
             return m
     return None
 
 def detect_stockage(text: str) -> str:
-    for cap in ["512", "256", "128", "64"]:
-        if cap in text:
-            return cap
+    for cap in ["1to", "1 to", "1tb", "512", "256", "128", "64"]:
+        if cap in text.lower():
+            return cap.upper().replace("TO", "To").replace("TB", "To")
     return "?"
 
-# ── Analyse principale ────────────────────────────────────────────────────────
-def analyser(item: dict) -> dict:
+def detect_panne(text: str) -> str:
+    t = text.lower()
+    for p in PANNES:
+        if p in t:
+            return p
+    return ""
+
+def detect_cout_reparation(panne: str) -> int:
+    for kw, cout in COUTS_REPARATION.items():
+        if kw in panne:
+            return cout
+    return COUT_DEFAULT
+
+# ── Moteur APEX ───────────────────────────────────────────────────────────────
+def apex_score(item: dict) -> dict:
     title = item["title"].lower()
     desc  = item.get("description", "").lower()
     full  = title + " " + desc
 
-    DEFAUT = {"valide": False, "conseil": "ignorer", "confiance": 95,
-              "modele": "?", "etat": "?", "urgence": False,
-              "resume": "", "raison": "", "score": 0}
+    REJET = {"valide": False, "score": 0, "verdict": "REJET",
+             "modele": "?", "panne": "?", "marge": 0, "raison": ""}
 
-    # Prix
-    try:
-        price = float(item["price"])
-        if price < PRIX_MIN or price > PRIX_MAX:
-            return {**DEFAUT, "raison": "Prix hors limites"}
-    except ValueError:
-        price = 0
+    # RÈGLE 01 — Liste noire absolue
+    for mot in BLACKLIST:
+        if mot in full:
+            return {**REJET, "raison": f"Blacklist: '{mot}'"}
 
-    # Exclusions absolues dans le titre
-    if any(kw in title for kw in MOTS_EXCLUS_TITRE):
-        return {**DEFAUT, "raison": "Mot exclu dans le titre"}
-
-    # Modèle
+    # RÈGLE 02 — Modèle valide
     modele = detect_modele(full)
     if not modele:
-        return {**DEFAUT, "raison": "Modèle non reconnu"}
+        return {**REJET, "raison": "Modèle non reconnu"}
 
-    stockage = detect_stockage(full)
-    valeur_base = VALEURS_MARCHE[modele]
-    bonus = BONUS_STOCKAGE.get(stockage, 0)
-    valeur = valeur_base + bonus
-
-    pct = round((valeur - price) / valeur * 100) if valeur > 0 else 0
-
-    # Détection état
-    est_casse   = any(kw in full for kw in MOTS_CASSE)
-    est_bon_etat = any(kw in full for kw in MOTS_BON_ETAT)
-
-    # Bon état ET pas cassé → ignorer
-    if est_bon_etat and not est_casse:
-        return {**DEFAUT, "modele": modele.title(), "raison": "Annoncé en bon état"}
-
-    # Prix trop proche du marché ET pas cassé → probablement fonctionnel
-    if not est_casse and pct < 20:
-        return {**DEFAUT, "modele": modele.title(),
-                "raison": f"Prix trop élevé ({pct}% sous marché) sans mention de casse"}
-
-    # ── Score de pertinence ───────────────────────────────────────────────────
-    score = 0
-    if price <= 20:    score += 70
-    elif price <= 40:  score += 55
-    elif price <= 60:  score += 40
-    elif price <= 80:  score += 28
-    elif price <= 100: score += 18
-    else:              score += 8
-
-    if est_casse:      score += 20
-    if pct >= 40:      score += 25
-    elif pct >= 30:    score += 15
-    elif pct >= 20:    score += 8
-
-    # Bonus modèles récents
-    if any(m in modele for m in ["16", "15 pro", "14 pro"]):
-        score += 10
-
-    # Bonus stockage élevé
-    if stockage in ["256", "512"]:
-        score += 8
-
-    score = min(score, 100)
-    urgence = pct >= 35 and est_casse
-    etat = next((kw for kw in MOTS_CASSE if kw in full), "état à vérifier")
-    conseil = "acheter" if score >= 55 else "vérifier"
-
-    return {
-        "valide":                True,
-        "conseil":               conseil,
-        "confiance":             88 if est_casse else 65,
-        "modele":                modele.title(),
-        "stockage":              stockage,
-        "etat":                  etat,
-        "valeur_marche":         valeur,
-        "pourcentage_sous_marche": max(pct, 0),
-        "urgence":               urgence,
-        "score":                 score,
-        "resume":                f"{modele.title()} {stockage}Go — {etat}",
-        "raison":                f"{pct}% sous le marché estimé ({valeur}€)" if pct > 0 else "À vérifier",
-    }
-
-# ── Pré-filtre rapide ─────────────────────────────────────────────────────────
-def pre_filter(item: dict) -> bool:
-    title = item["title"].lower()
-    if "iphone" not in title:
-        return False
+    # RÈGLE 03 — Prix obligatoire
     try:
         price = float(item["price"])
-        if price < PRIX_MIN or price > PRIX_MAX:
-            return False
+        if price <= 0:
+            return {**REJET, "raison": "Prix manquant"}
     except ValueError:
-        pass
-    if any(kw in title for kw in MOTS_EXCLUS_TITRE):
-        return False
-    return True
+        return {**REJET, "raison": "Prix non parseable"}
+
+    stockage    = detect_stockage(full)
+    panne       = detect_panne(full)
+    est_casse   = bool(panne)
+    est_bon_etat = any(kw in full for kw in BON_ETAT) and not est_casse
+
+    # RÈGLE 06 — Panne vague sans précision = risque trop élevé si pas de panne claire
+    # On accepte quand même si prix très bas par rapport au marché
+
+    # Bon état sans casse → ignorer
+    if est_bon_etat:
+        return {**REJET, "raison": "Annoncé en bon état sans défaut"}
+
+    # Calcul marge
+    prix_revente = PRIX_REVENTE.get(modele, 200)
+    cout_reparation = detect_cout_reparation(panne) if est_casse else 0
+    marge_nette = prix_revente - price - cout_reparation
+
+    # RÈGLE 04 — Marge < 30€ = rejet
+    if marge_nette < 30:
+        return {**REJET, "modele": modele.title(), "marge": round(marge_nette),
+                "raison": f"Marge insuffisante ({round(marge_nette)}€)"}
+
+    # ── Calcul score APEX ─────────────────────────────────────────────────────
+    score = 0
+
+    # Potentiel de profit (50 pts)
+    if marge_nette > 100:   score += 30
+    elif marge_nette > 60:  score += 20
+    elif marge_nette > 30:  score += 10
+
+    # Qualité annonce (25 pts)
+    if est_casse and panne not in ["cassé", "cassée", "broken", "damaged"]:
+        score += 10  # panne précisément décrite
+    if item.get("photo"):
+        score += 8   # au moins une photo
+
+    # Fiabilité vendeur (15 pts) — heuristiques
+    desc_lower = desc
+    if not any(w in desc_lower for w in ["plusieurs modèles", "stock", "professionnel", "boutique"]):
+        score += 8   # probablement particulier
+    score += 4       # par défaut profil actif
+    score += 3       # France par défaut
+
+    # Urgence temporelle (10 pts)
+    created = item.get("created_at", "")
+    if created:
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            age_min = (datetime.now(timezone.utc) - dt).total_seconds() / 60
+            if age_min < 30:    score += 10
+            elif age_min < 120: score += 7
+            elif age_min < 360: score += 4
+        except Exception:
+            score += 4  # age inconnu
+    else:
+        score += 7  # on suppose récent
+
+    score = min(score, 100)
+
+    # Verdict
+    if score >= 85:   verdict = "🔥 ACHAT PRIORITAIRE"
+    elif score >= 65: verdict = "✅ BON DEAL"
+    else:             verdict = "👀 À SURVEILLER"
+
+    return {
+        "valide":           score >= 65,
+        "score":            score,
+        "verdict":          verdict,
+        "modele":           modele.title(),
+        "stockage":         stockage,
+        "panne":            panne or "à vérifier",
+        "cout_reparation":  cout_reparation,
+        "prix_revente":     prix_revente,
+        "marge":            round(marge_nette),
+        "raison":           f"Marge ~{round(marge_nette)}€ | Score {score}/100",
+    }
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 def send_telegram_text(msg: str, retries=3):
@@ -307,41 +357,41 @@ def send_discord(msg: str, url: str = None, photo_url: str = None, retries=3):
         except Exception as e:
             log.error(f"Discord ({i+1}): {e}")
 
-# ── Envoi ─────────────────────────────────────────────────────────────────────
-def send_item(item: dict, ai: dict):
-    score  = ai.get("score", 0)
-    urgent = ai.get("urgence", False)
-    conseil_emoji = {"acheter": "🟢", "vérifier": "🟡"}.get(ai.get("conseil", ""), "🤖")
-
-    header = ("🚨🚨 URGENCE — TRÈS EN DESSOUS DU MARCHÉ 🚨🚨" if urgent else
-              "🔥 SUPER AFFAIRE" if score >= 75 else
-              "✅ Bonne affaire" if score >= 50 else
-              "📌 À vérifier")
-
+# ── Format message APEX ───────────────────────────────────────────────────────
+def format_message(item: dict, ai: dict) -> str:
+    score = ai["score"]
+    bar_filled = int(score / 10)
+    bar = "█" * bar_filled + "░" * (10 - bar_filled)
     stockage_str = f" {ai.get('stockage')}Go" if ai.get('stockage') not in ["?", None] else ""
-    marche_str = ""
-    if ai.get("valeur_marche") and ai.get("pourcentage_sous_marche", 0) > 0:
-        marche_str = (f"\n📉 Valeur marché : ~{ai['valeur_marche']}€"
-                      f" (<b>-{ai['pourcentage_sous_marche']}% sous le marché</b>)")
 
-    caption = (
-        f"{header}\n"
-        f"{item['source']} — <b>{item['title']}</b>\n"
+    msg = (
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{ai['verdict']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📱 <b>{ai['modele']}{stockage_str}</b>\n"
         f"💶 <b>{item['price']} €</b>\n"
-        f"📱 {ai.get('modele', '?')}{stockage_str}\n"
-        f"🔧 {ai.get('etat', '?')}"
-        f"{marche_str}\n"
-        f"{conseil_emoji} <b>{ai.get('conseil', '?')}</b> — {ai.get('raison', '')}\n"
-        f"🎯 Score : {score}/100 | Confiance : {ai.get('confiance', '?')}%\n"
+        f"📍 {item['source']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚠️ Panne : {ai['panne']}\n"
+        f"🔧 Réparation est. : ~{ai['cout_reparation']}€\n"
+        f"💰 Prix revente : ~{ai['prix_revente']}€\n"
+        f"📈 <b>Marge nette : ~{ai['marge']}€</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏆 Score APEX : {score}/100\n"
+        f"[{bar}] {score}%\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🔗 <a href=\"{item['url']}\">Voir l'annonce</a>"
     )
+    return msg
 
+def send_item(item: dict, ai: dict):
+    msg = format_message(item, ai)
     if item.get("photo"):
-        send_telegram_photo(item["photo"], caption)
-        send_discord(caption, item["url"], item["photo"])
+        send_telegram_photo(item["photo"], msg)
+        send_discord(msg, item["url"], item["photo"])
     else:
-        send_telegram_text(caption)
-        send_discord(caption, item["url"])
+        send_telegram_text(msg)
+        send_discord(msg, item["url"])
 
 # ── Scraping Vinted ───────────────────────────────────────────────────────────
 def fetch_vinted() -> list:
@@ -361,14 +411,12 @@ def fetch_vinted() -> list:
 
     results = []
     seen_ids = set()
-    for query in SEARCH_QUERIES_VINTED:
+    for query in SEARCH_QUERIES:
         params = {"search_text": query, "order": "newest_first",
-                  "per_page": "50", "price_to": str(PRIX_MAX),
-                  "price_from": str(PRIX_MIN)}
+                  "per_page": "50", "price_to": "150", "price_from": "10"}
         try:
-            r = session.get(
-                f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
-                headers=headers, timeout=15)
+            r = session.get(f"https://www.vinted.fr/api/v2/catalog/items?{urlencode(params)}",
+                            headers=headers, timeout=15)
             r.raise_for_status()
             for i in r.json().get("items", []):
                 if i["id"] in seen_ids:
@@ -380,12 +428,13 @@ def fetch_vinted() -> list:
                     photo = photos[0].get("url") or photos[0].get("full_size_url")
                 results.append({
                     "id":          f"vinted_{i['id']}",
-                    "title":       i.get("title", "Sans titre"),
+                    "title":       i.get("title", ""),
                     "description": i.get("description", ""),
                     "price":       parse_price(i.get("price")),
                     "url":         f"https://www.vinted.fr/items/{i['id']}",
                     "photo":       photo,
                     "source":      "Vinted 🟢",
+                    "created_at":  i.get("created_at_ts", ""),
                     "title_hash":  title_hash(i.get("title", "")),
                 })
         except Exception as e:
@@ -397,11 +446,13 @@ def fetch_leboncoin() -> list:
     import xml.etree.ElementTree as ET
     results = []
     seen_ids = set()
-    queries = ["iphone+cassé", "iphone+fissuré", "iphone+panne",
-               "iphone+pour+pièce", "iphone+hs", "iphone+écran+cassé",
-               "iphone+broken", "iphone+cracked"]
+    queries = [
+        "iphone+cassé", "iphone+fissuré", "iphone+panne",
+        "iphone+pour+pièce", "iphone+hs", "iphone+écran+cassé",
+        "iphone+broken", "iphone+cracked",
+    ]
     for query in queries:
-        rss_url = f"https://www.leboncoin.fr/rss?text={query}&price_max={PRIX_MAX}&shippable=1"
+        rss_url = f"https://www.leboncoin.fr/rss?text={query}&price_max=150&shippable=1"
         try:
             r = requests.get(rss_url, headers={"User-Agent": "RSSReader/1.0"}, timeout=15)
             r.raise_for_status()
@@ -413,7 +464,7 @@ def fetch_leboncoin() -> list:
                 if guid in seen_ids:
                     continue
                 seen_ids.add(guid)
-                title = item.findtext("title", "Sans titre")
+                title = item.findtext("title", "")
                 desc  = re.sub(r"<[^>]+>", "", item.findtext("description", ""))
                 price_el = item.find("lbc:price", ns)
                 price = price_el.text if price_el is not None else "?"
@@ -429,6 +480,7 @@ def fetch_leboncoin() -> list:
                     "url":         link,
                     "photo":       photo,
                     "source":      "Leboncoin 🔴",
+                    "created_at":  "",
                     "title_hash":  title_hash(title),
                 })
         except Exception as e:
@@ -437,43 +489,40 @@ def fetch_leboncoin() -> list:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    log.info("🚀 Tracker iPhone — Version Maximale")
+    log.info("🚀 APEX — Démarrage")
     seen        = load_seen()
     seen_hashes = set()
 
     all_items = fetch_vinted() + fetch_leboncoin()
-    log.info(f"Total : {len(all_items)}")
+    log.info(f"Total récupérés : {len(all_items)}")
 
     fresh = [i for i in all_items if i["id"] not in seen]
     log.info(f"Nouveaux : {len(fresh)}")
 
-    pre = [i for i in fresh if pre_filter(i)]
-    log.info(f"Pré-filtre : {len(pre)}")
-
     # Déduplication par titre
     deduped = []
-    for item in pre:
+    for item in fresh:
         h = item["title_hash"]
-        if h not in seen_hashes:
+        if h not in seen_hashes and item["title"]:
             seen_hashes.add(h)
             deduped.append(item)
+
     log.info(f"Après dédup : {len(deduped)}")
 
     sent = 0
     for item in deduped:
-        ai = analyser(item)
-        item["score"] = ai.get("score", 0)
+        result = apex_score(item)
+        seen.add(item["id"])
 
-        if not ai.get("valide"):
-            log.info(f"Ignoré ({ai.get('raison', '?')}) : {item['title']}")
-            seen.add(item["id"])
+        if not result["valide"]:
+            log.info(f"REJET ({result['raison']}) : {item['title'][:50]}")
             continue
 
-        send_item(item, ai)
-        seen.add(item["id"])
+        log.info(f"✅ PÉPITE score={result['score']} marge={result['marge']}€ : {item['title'][:50]}")
+        send_item(item, result)
         sent += 1
 
-    log.info(f"✅ {sent} annonce(s) envoyée(s)")
+    log.info(f"✅ {sent} pépite(s) envoyée(s)")
 
     for i in fresh:
         seen.add(i["id"])

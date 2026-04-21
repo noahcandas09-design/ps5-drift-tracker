@@ -31,17 +31,65 @@ PRIX_REVENTE = {
 }
 
 # Uniquement ce qui est clairement un accessoire → rejet
+# Vérifié dans TITRE + DESCRIPTION
 BLACKLIST_STRICTE = [
-    "coque", "étui", "housse", "case", "cover", "shell",
-    "chargeur", "câble", "cable", "charger", "adaptateur",
-    "airpods", "écouteurs", "earphones", "earbuds",
-    "verre trempé", "screen protector", "tempered glass",
-    "powerbank", "batterie externe",
-    "ipad", "macbook", "apple watch",
+    # FR — coques et étuis
+    "coque", "étui", "housse", "bumper", "protège", "protecteur",
+    "porte-cartes", "tour de cou",
+    # EN — cases
+    "phone case", "mobile case", "iphone case", "case for iphone",
+    "cover for iphone", "silicone case", "hard case", "soft case",
+    "tpu case", "leather case", "clear case", "bumper case",
+    "flip case", "folio case", "wallet case", "snap case",
+    "shockproof case", "waterproof case", "rugged case",
+    # ES
+    "funda", "carcasa", "estuche", "cubierta para iphone",
+    "funda para iphone", "funda silicona",
+    # IT
+    "custodia", "custodia per iphone", "cover per iphone",
+    # DE
+    "hülle", "handyhülle", "schutzhülle für iphone",
+    "silikonhülle", "lederhülle",
+    # PT
+    "capa", "capinha para iphone",
+    # NL
+    "hoesje", "hoesje voor iphone",
+    # PL
+    "etui do iphone", "obudowa",
+    # TR
+    "kılıf", "telefon kılıfı",
+    # Chargeurs
+    "chargeur", "câble", "cable", "adaptateur", "magsafe",
+    "charger", "charging cable", "power adapter", "wall charger",
+    "wireless charger", "ladekabel", "ladegerät", "cargador",
+    "caricabatterie", "cavo di ricarica",
+    # Écouteurs
+    "airpods", "écouteurs", "oreillettes", "casque audio",
+    "earphones", "earbuds", "headphones", "kopfhörer",
+    "auriculares", "cuffie",
+    # Protection écran
+    "verre trempé", "film protecteur", "protection écran",
+    "screen protector", "tempered glass", "panzerglas",
+    "protector de pantalla", "vetro temperato",
+    # Accessoires divers
+    "powerbank", "batterie externe", "pop socket", "popsocket",
+    "selfie stick", "support téléphone", "stand", "dock",
+    "phone grip", "ring holder", "strap", "cordon",
+    # Pièces détachées
+    "écran seul", "dalle lcd", "vitre seule", "batterie seule",
+    "nappe", "connecteur", "flex", "pièce détachée",
+    "screen only", "lcd only", "battery only", "spare part",
+    "parts only", "schermo solo", "ersatzteil",
+    # Autres appareils
+    "ipad", "macbook", "apple watch", "airpods",
     "samsung", "huawei", "xiaomi", "oppo", "oneplus",
-    "icloud", "activation lock",
+    "google pixel", "sony xperia", "nokia",
+    # Verrous
+    "icloud", "activation lock", "locked to owner",
+    "find my iphone", "fmi on", "imei bloqué", "volé",
+    # Fausses annonces
     "je cherche", "recherche", "wanted", "iso", "wtb",
-    "pièce détachée", "écran seul", "vitre seule",
+    "want to buy", "busco", "cerco", "suche",
 ]
 
 # Modèles valides
@@ -138,9 +186,9 @@ def filtrer(item: dict) -> dict | None:
     if "iphone" not in title:
         return None
 
-    # Blacklist stricte — uniquement dans le titre
+    # Blacklist — vérifié dans TITRE ET DESCRIPTION
     for mot in BLACKLIST_STRICTE:
-        if mot in title:
+        if mot in title or mot in desc:
             return None
 
     # Modèle

@@ -20,7 +20,7 @@ ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
 
 SEEN_FILE = Path("seen_ids.json")
 PRIX_MAX  = 150
-PRIX_MIN  = 10
+PRIX_MIN  = 40
 
 # Prix revente Back Market grade B
 PRIX_REVENTE = {

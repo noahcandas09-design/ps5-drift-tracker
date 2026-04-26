@@ -149,14 +149,63 @@ def pre_filter(item: dict) -> bool:
     if "iphone" not in title:
         return False
 
-    # Blacklist dans titre ET description
-    for mot in BLACKLIST:
-        if mot in full:
-            return False
-
     # Doit contenir un modèle valide
     if not any(m in full for m in MODELES):
         return False
+
+    # ── LOGIQUE INVERSÉE : le titre doit prouver que c'est un téléphone ──────
+    # Mots qui prouvent que c'est un iPhone complet
+    mots_telephone = [
+        # Caractéristiques physiques d'un téléphone
+        "go", "gb", "128", "256", "512", "64",
+        # États cassés
+        "cassé", "fissuré", "hs", "panne", "broken", "cracked",
+        "écran cassé", "vitre cassée", "ne s'allume", "batterie",
+        "pour pièce", "à réparer", "damaged", "faulty",
+        # États fonctionnels
+        "débloqué", "unlocked", "fonctionnel", "fonctionne",
+        "reconditionné", "grade",
+        # Couleurs iPhone = téléphone complet
+        "noir", "blanc", "bleu", "rouge", "vert", "violet",
+        "black", "white", "blue", "red", "green", "purple",
+        "midnight", "starlight", "titanium", "natural",
+        # Mots vendeur
+        "vends", "vend", "cède", "vente", "occasion",
+        "selling", "sell", "vendo",
+    ]
+
+    # Au moins UN mot de téléphone doit être dans le titre
+    if not any(kw in title for kw in mots_telephone):
+        return False
+
+    # ── Blacklist STRICTE dans le titre uniquement ───────────────────────────
+    # Mots qui au DÉBUT du titre = accessoire à 100%
+    patterns_accessoire = [
+        r"^coque\b", r"^étui\b", r"^housse\b", r"^verre\b",
+        r"^chargeur\b", r"^câble\b", r"^cable\b", r"^airpod",
+        r"^écouteur", r"^protection\b", r"^film\b", r"^support\b",
+        r"^powerbank\b", r"^batterie externe", r"^dock\b",
+        r"^case\b", r"^cover\b", r"^charger\b", r"^screen protector",
+        r"^funda\b", r"^custodia\b", r"^hülle\b", r"^hoesje\b",
+        r"^kılıf\b", r"^capa\b", r"^capinha\b",
+        r"^pièce\b", r"^écran seul", r"^vitre seule",
+        r"^batterie seule", r"^nappe\b",
+        r"^lot\b", r"^pack\b", r"^bundle\b",
+        r"^je cherche", r"^recherche\b", r"^wanted\b", r"^iso\b",
+    ]
+    for pat in patterns_accessoire:
+        if re.search(pat, title):
+            return False
+
+    # Exclusions absolues dans le titre
+    exclusions_titre = [
+        "icloud", "activation lock", "volé", "blacklisté",
+        "samsung", "huawei", "xiaomi", "oppo", "oneplus",
+        "ipad", "macbook", "apple watch",
+    ]
+    for mot in exclusions_titre:
+        if mot in title:
+            return False
 
     return True
 
